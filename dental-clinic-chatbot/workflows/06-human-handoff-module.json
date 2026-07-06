@@ -1,0 +1,49 @@
+{
+  "name": "M6 — Human Handoff",
+  "nodes": [
+    {
+      "id": "note6",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-900, -260],
+      "parameters": {
+        "width": 640,
+        "height": 220,
+        "color": 3,
+        "content": "## M6 Human Handoff\nCollects name + phone/email + reason, upserts to Escalations (issue_type=handoff), notifies staff when contact present, texts patient (gated). Promises follow-up but never a specific callback time.\nAfter import: point 'Upsert Escalation'→M7, 'Notify Staff'→M8, 'Send Patient SMS'→M9."
+      }
+    },
+    { "id": "trg6", "name": "When Called", "type": "n8n-nodes-base.executeWorkflowTrigger", "typeVersion": 1.1, "position": [-900, 120], "parameters": { "inputSource": "passthrough" } },
+    {
+      "id": "build6",
+      "name": "Build Reply + Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-660, 120],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ctx = $json;\nconst p = ctx.patient || {};\nconst clinic = ctx.clinic || {};\nconst ready = !!(p.name && (p.phone || p.email));\nconst day = $now.format('yyyy-LL-dd');\nconst leadKey = `${clinic.clinic_id}|${p.phone || p.email || 'nocontact'}|handoff|${day}`;\n\nlet reply;\nif (ready) {\n  reply = `Thanks ${p.name} — I've let our clinic team know you'd like to speak with someone. They'll follow up with you as soon as they can. Is there anything else I can note for them?`;\n} else {\n  reply = (ctx.next_question && ctx.next_question.trim()) ? ctx.next_question : `Of course — I'll connect you with our team. Could you share your full name and the best phone number or email to reach you?`;\n}\n\nconst row = {\n  tab: 'Escalations', operation: 'upsert', sheet_id: clinic.sheet_id, lead_key: leadKey,\n  timestamp: ctx.timestamp || $now.toISO(), session_id: ctx.session_id, patient_name: p.name || '',\n  phone: p.phone || '', email: p.email || '', issue_type: 'human_handoff', urgency: ctx.urgency || 'medium',\n  summary: (clinic.test_mode ? '[TEST] ' : '') + (ctx.summary || ctx.user_message),\n  staff_notified: ready, sms_sent: false, status: ready ? 'New' : 'Collecting',\n  notes: p.reason || ''\n};\n\nconst emailBody = `Request type: Human handoff\\nUrgency: ${ctx.urgency}\\nPatient: ${p.name}\\nPhone: ${p.phone || '-'}\\nEmail: ${p.email || '-'}\\nReason: ${p.reason || ctx.summary}\\n\\nOriginal message: \"${ctx.user_message}\"\\n\\nRecommended next action: Follow up with the patient.`;\nconst email = { to: clinic.staff_email, subject: `[${clinic.clinic_name}] Human handoff request — ${p.name}`, body: (clinic.test_mode ? '[TEST MODE]\\n' : '') + emailBody, reply_to: p.email || '' };\n\nconst sms = { to: p.phone, body: `Hi ${p.name}, thanks for reaching out to ${clinic.clinic_name}. A team member will follow up with you soon.`, message_type: 'handoff_received', from: clinic.twilio_from, enabled: clinic.sms_enabled_patient, session_id: ctx.session_id, sheet_id: clinic.sheet_id };\n\nreturn { json: { ...ctx, bot_response: reply, _ready: ready, _row: row, _email: email, _sms: sms } };"
+      }
+    },
+    { "id": "shapelog6", "name": "Shape Log Row", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [-420, 120], "parameters": { "mode": "runOnceForEachItem", "jsCode": "return { json: $json._row };" } },
+    { "id": "log6", "name": "Upsert Escalation", "type": "n8n-nodes-base.executeWorkflow", "typeVersion": 1.2, "position": [-180, 120], "onError": "continueRegularOutput", "parameters": { "workflowId": { "__rl": true, "mode": "list", "value": "REPLACE_ME_M7_ID", "cachedResultName": "M7 — Logging Helper" }, "options": { "waitForSubWorkflow": true } } },
+    { "id": "ifready6", "name": "Ready To Notify?", "type": "n8n-nodes-base.if", "typeVersion": 2.2, "position": [60, 120], "parameters": { "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict" }, "conditions": [ { "leftValue": "={{ $('Build Reply + Rows').item.json._ready }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } } ], "combinator": "and" } } },
+    { "id": "shapemail6", "name": "Shape Email", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [300, 20], "parameters": { "mode": "runOnceForEachItem", "jsCode": "return { json: $('Build Reply + Rows').item.json._email };" } },
+    { "id": "mail6", "name": "Notify Staff", "type": "n8n-nodes-base.executeWorkflow", "typeVersion": 1.2, "position": [540, 20], "onError": "continueRegularOutput", "parameters": { "workflowId": { "__rl": true, "mode": "list", "value": "REPLACE_ME_M8_ID", "cachedResultName": "M8 — Staff Email Helper" }, "options": { "waitForSubWorkflow": true } } },
+    { "id": "shapesms6", "name": "Shape Patient SMS", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [780, 20], "parameters": { "mode": "runOnceForEachItem", "jsCode": "return { json: $('Build Reply + Rows').item.json._sms };" } },
+    { "id": "sms6", "name": "Send Patient SMS", "type": "n8n-nodes-base.executeWorkflow", "typeVersion": 1.2, "position": [1020, 20], "onError": "continueRegularOutput", "parameters": { "workflowId": { "__rl": true, "mode": "list", "value": "REPLACE_ME_M9_ID", "cachedResultName": "M9 — Twilio SMS Helper" }, "options": { "waitForSubWorkflow": true } } },
+    { "id": "ret6", "name": "Return Context", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [1260, 120], "parameters": { "mode": "runOnceForEachItem", "jsCode": "const c = { ...$('Build Reply + Rows').item.json }; delete c._row; delete c._email; delete c._sms; delete c._ready; return { json: c };" } }
+  ],
+  "connections": {
+    "When Called": { "main": [[{ "node": "Build Reply + Rows", "type": "main", "index": 0 }]] },
+    "Build Reply + Rows": { "main": [[{ "node": "Shape Log Row", "type": "main", "index": 0 }]] },
+    "Shape Log Row": { "main": [[{ "node": "Upsert Escalation", "type": "main", "index": 0 }]] },
+    "Upsert Escalation": { "main": [[{ "node": "Ready To Notify?", "type": "main", "index": 0 }]] },
+    "Ready To Notify?": { "main": [ [{ "node": "Shape Email", "type": "main", "index": 0 }], [{ "node": "Return Context", "type": "main", "index": 0 }] ] },
+    "Shape Email": { "main": [[{ "node": "Notify Staff", "type": "main", "index": 0 }]] },
+    "Notify Staff": { "main": [[{ "node": "Shape Patient SMS", "type": "main", "index": 0 }]] },
+    "Shape Patient SMS": { "main": [[{ "node": "Send Patient SMS", "type": "main", "index": 0 }]] },
+    "Send Patient SMS": { "main": [[{ "node": "Return Context", "type": "main", "index": 0 }]] }
+  }
+}

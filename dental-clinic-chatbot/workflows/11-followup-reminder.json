@@ -1,0 +1,105 @@
+{
+  "name": "M11 — Staff Follow-up Reminder (24h)",
+  "nodes": [
+    {
+      "id": "note11",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-940, -280],
+      "parameters": {
+        "width": 660,
+        "height": 240,
+        "color": 5,
+        "content": "## M11 Follow-up Reminder\nRuns hourly. Reads Appointment_Requests, finds rows still status = 'New' older than 24h, and emails staff a single digest so no lead is forgotten.\nExtend by duplicating the read for Escalations / Cancellations_Reschedules.\nAfter import: set Google Sheets + Gmail credentials and fill the Config node."
+      }
+    },
+    {
+      "id": "sched11",
+      "name": "Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-940, 120],
+      "parameters": { "rule": { "interval": [ { "field": "hours", "hoursInterval": 1 } ] } }
+    },
+    {
+      "id": "cfg11",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-720, 120],
+      "parameters": {
+        "assignments": { "assignments": [
+          { "id": "f1", "name": "sheet_id", "value": "{{GOOGLE_SHEET_ID}}", "type": "string" },
+          { "id": "f2", "name": "staff_email", "value": "{{staff_email}}", "type": "string" },
+          { "id": "f3", "name": "clinic_name", "value": "{{clinic_name}}", "type": "string" }
+        ] },
+        "options": {}
+      }
+    },
+    {
+      "id": "read11",
+      "name": "Read Appointment Requests",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [-500, 120],
+      "parameters": {
+        "operation": "read",
+        "documentId": { "__rl": true, "mode": "id", "value": "={{ $json.sheet_id }}" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "Appointment_Requests" },
+        "options": {}
+      },
+      "credentials": { "googleSheetsOAuth2Api": { "id": "REPLACE_ME_SHEETS_CRED_ID", "name": "Google Sheets account" } }
+    },
+    {
+      "id": "filter11",
+      "name": "Find Stale New Leads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-280, 120],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const cfg = $('Config').first().json;\nconst cutoff = $now.minus({ hours: 24 });\nconst rows = $input.all().map(i => i.json);\nconst stale = rows.filter(r => {\n  const status = String(r.status || '').toLowerCase();\n  if (status !== 'new') return false;\n  const created = r.created_at ? DateTime.fromISO(String(r.created_at)) : null;\n  return created && created.isValid && created < cutoff;\n});\n\nconst lines = stale.map(r => `• ${r.patient_name || '(no name)'} | ${r.phone || '-'} | ${r.requested_service || '-'} | created ${r.created_at}`);\nconst body = stale.length\n  ? `The following appointment leads are still marked \"New\" after 24h and need follow-up:\\n\\n${lines.join('\\n')}\\n\\nPlease update their status in the sheet once actioned.`\n  : '';\n\nreturn [{ json: { should_send: stale.length > 0, count: stale.length, to: cfg.staff_email, clinic_name: cfg.clinic_name, body } }];"
+      }
+    },
+    {
+      "id": "if11",
+      "name": "Any Stale?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-60, 120],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "strict" },
+          "conditions": [ { "leftValue": "={{ $json.should_send }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } } ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "mail11",
+      "name": "Email Staff Reminder",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [180, 40],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $json.to }}",
+        "subject": "={{ '[' + $json.clinic_name + '] ' + $json.count + ' appointment lead(s) awaiting follow-up (24h+)' }}",
+        "emailType": "text",
+        "message": "={{ $json.body }}",
+        "options": {}
+      },
+      "credentials": { "gmailOAuth2": { "id": "REPLACE_ME_GMAIL_CRED_ID", "name": "Gmail account" } }
+    }
+  ],
+  "connections": {
+    "Every Hour": { "main": [[{ "node": "Config", "type": "main", "index": 0 }]] },
+    "Config": { "main": [[{ "node": "Read Appointment Requests", "type": "main", "index": 0 }]] },
+    "Read Appointment Requests": { "main": [[{ "node": "Find Stale New Leads", "type": "main", "index": 0 }]] },
+    "Find Stale New Leads": { "main": [[{ "node": "Any Stale?", "type": "main", "index": 0 }]] },
+    "Any Stale?": { "main": [ [{ "node": "Email Staff Reminder", "type": "main", "index": 0 }], [] ] }
+  }
+}

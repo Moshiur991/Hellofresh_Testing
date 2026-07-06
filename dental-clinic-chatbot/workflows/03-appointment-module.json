@@ -1,0 +1,61 @@
+{
+  "name": "M3 — Appointment Request",
+  "nodes": [
+    {
+      "id": "note3",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-900, -260],
+      "parameters": {
+        "width": 640,
+        "height": 260,
+        "color": 3,
+        "content": "## M3 Appointment Request\nInput: context from M1. Builds reply + rows, upserts lead (dedup on lead_key), and when name+phone are present notifies staff (M8) and texts patient (M9, gated).\nNEVER confirms a time — only 'request received'.\nAfter import: point 'Upsert Lead' at M7, 'Notify Staff' at M8, 'Send Patient SMS' at M9."
+      }
+    },
+    { "id": "trg3", "name": "When Called", "type": "n8n-nodes-base.executeWorkflowTrigger", "typeVersion": 1.1, "position": [-900, 120], "parameters": { "inputSource": "passthrough" } },
+    {
+      "id": "build3",
+      "name": "Build Reply + Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-660, 120],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ctx = $json;\nconst p = ctx.patient || {};\nconst clinic = ctx.clinic || {};\nconst ready = !!(p.name && p.phone);\nconst day = $now.format('yyyy-LL-dd');\nconst leadKey = `${clinic.clinic_id}|${p.phone || 'nophone'}|appointment|${day}`;\nconst svc = p.service || 'a visit';\n\nlet reply;\nif (ready) {\n  reply = `Thanks ${p.name}! I've sent your request for ${svc} to our team. Please note this is a request only — we can't confirm a time here. Our team will contact you at ${p.phone} to confirm availability. Anything else I can help with?`;\n} else {\n  reply = (ctx.next_question && ctx.next_question.trim())\n    ? ctx.next_question\n    : `I'd be glad to help you request an appointment. Could you share your full name and the best phone number to reach you?`;\n}\n\nconst apptRow = {\n  tab: 'Appointment_Requests', operation: 'upsert', sheet_id: clinic.sheet_id,\n  lead_key: leadKey, created_at: ctx.timestamp || $now.toISO(), session_id: ctx.session_id,\n  patient_name: p.name || '', phone: p.phone || '', email: p.email || '',\n  patient_type: p.patient_type || '', requested_service: p.service || '',\n  preferred_date: p.preferred_date || '', preferred_time: p.preferred_time || '',\n  urgency: ctx.urgency || 'medium', status: ready ? 'New' : 'Collecting',\n  conversation_summary: (clinic.test_mode ? '[TEST] ' : '') + (ctx.summary || ''),\n  staff_notified: ready, sms_sent: false, last_updated: $now.toISO()\n};\n\nconst emailBody = `Request type: Appointment request\\nUrgency: ${ctx.urgency}\\nPatient: ${p.name}\\nPhone: ${p.phone}\\nEmail: ${p.email || '-'}\\nPatient type: ${p.patient_type || '-'}\\nService: ${p.service || '-'}\\nPreferred: ${p.preferred_date || '-'} ${p.preferred_time || ''}\\n\\nSummary: ${ctx.summary}\\nOriginal message: \"${ctx.user_message}\"\\n\\nRecommended next action: Contact the patient to confirm availability. (Not yet confirmed.)`;\nconst email = { to: clinic.staff_email, subject: `[${clinic.clinic_name}] Appointment request — ${ctx.urgency} — ${p.name}`, body: (clinic.test_mode ? '[TEST MODE]\\n' : '') + emailBody, reply_to: p.email || '' };\n\nconst smsBody = `Hi ${p.name}, thanks for contacting ${clinic.clinic_name}. We received your appointment request for ${svc}. Our team will contact you to confirm availability.`;\nconst sms = { to: p.phone, body: smsBody, message_type: 'appointment_received', from: clinic.twilio_from, enabled: clinic.sms_enabled_patient, session_id: ctx.session_id, sheet_id: clinic.sheet_id };\n\nreturn { json: { ...ctx, bot_response: reply, _ready: ready, _apptRow: apptRow, _email: email, _sms: sms } };"
+      }
+    },
+    { "id": "shapelog3", "name": "Shape Log Row", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [-420, 120], "parameters": { "mode": "runOnceForEachItem", "jsCode": "return { json: $json._apptRow };" } },
+    {
+      "id": "log3", "name": "Upsert Lead", "type": "n8n-nodes-base.executeWorkflow", "typeVersion": 1.2, "position": [-180, 120], "onError": "continueRegularOutput",
+      "parameters": { "workflowId": { "__rl": true, "mode": "list", "value": "REPLACE_ME_M7_ID", "cachedResultName": "M7 — Logging Helper" }, "options": { "waitForSubWorkflow": true } }
+    },
+    {
+      "id": "ifready3", "name": "Ready To Notify?", "type": "n8n-nodes-base.if", "typeVersion": 2.2, "position": [60, 120],
+      "parameters": { "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict" }, "conditions": [ { "leftValue": "={{ $('Build Reply + Rows').item.json._ready }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } } ], "combinator": "and" } }
+    },
+    { "id": "shapemail3", "name": "Shape Email", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [300, 20], "parameters": { "mode": "runOnceForEachItem", "jsCode": "return { json: $('Build Reply + Rows').item.json._email };" } },
+    {
+      "id": "mail3", "name": "Notify Staff", "type": "n8n-nodes-base.executeWorkflow", "typeVersion": 1.2, "position": [540, 20], "onError": "continueRegularOutput",
+      "parameters": { "workflowId": { "__rl": true, "mode": "list", "value": "REPLACE_ME_M8_ID", "cachedResultName": "M8 — Staff Email Helper" }, "options": { "waitForSubWorkflow": true } }
+    },
+    { "id": "shapesms3", "name": "Shape Patient SMS", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [780, 20], "parameters": { "mode": "runOnceForEachItem", "jsCode": "return { json: $('Build Reply + Rows').item.json._sms };" } },
+    {
+      "id": "sms3", "name": "Send Patient SMS", "type": "n8n-nodes-base.executeWorkflow", "typeVersion": 1.2, "position": [1020, 20], "onError": "continueRegularOutput",
+      "parameters": { "workflowId": { "__rl": true, "mode": "list", "value": "REPLACE_ME_M9_ID", "cachedResultName": "M9 — Twilio SMS Helper" }, "options": { "waitForSubWorkflow": true } }
+    },
+    { "id": "ret3", "name": "Return Context", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [1260, 120], "parameters": { "mode": "runOnceForEachItem", "jsCode": "const c = { ...$('Build Reply + Rows').item.json }; delete c._apptRow; delete c._email; delete c._sms; delete c._ready; return { json: c };" } }
+  ],
+  "connections": {
+    "When Called": { "main": [[{ "node": "Build Reply + Rows", "type": "main", "index": 0 }]] },
+    "Build Reply + Rows": { "main": [[{ "node": "Shape Log Row", "type": "main", "index": 0 }]] },
+    "Shape Log Row": { "main": [[{ "node": "Upsert Lead", "type": "main", "index": 0 }]] },
+    "Upsert Lead": { "main": [[{ "node": "Ready To Notify?", "type": "main", "index": 0 }]] },
+    "Ready To Notify?": { "main": [ [{ "node": "Shape Email", "type": "main", "index": 0 }], [{ "node": "Return Context", "type": "main", "index": 0 }] ] },
+    "Shape Email": { "main": [[{ "node": "Notify Staff", "type": "main", "index": 0 }]] },
+    "Notify Staff": { "main": [[{ "node": "Shape Patient SMS", "type": "main", "index": 0 }]] },
+    "Shape Patient SMS": { "main": [[{ "node": "Send Patient SMS", "type": "main", "index": 0 }]] },
+    "Send Patient SMS": { "main": [[{ "node": "Return Context", "type": "main", "index": 0 }]] }
+  }
+}

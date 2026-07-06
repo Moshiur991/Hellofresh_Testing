@@ -1,0 +1,176 @@
+{
+  "name": "M2 — FAQ (Pinecone RAG + confidence gate)",
+  "nodes": [
+    {
+      "id": "note2",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-820, -300],
+      "parameters": {
+        "width": 640,
+        "height": 320,
+        "color": 6,
+        "content": "## M2 FAQ (RAG)\nInput: context object from M1.\nEmbed question → Pinecone (namespace from config, topK 5) → confidence gate on top score (`clinic.pinecone_min_score`).\n- Above threshold → answer ONLY from retrieved chunks.\n- Below → do NOT invent; friendly fallback + log to Unanswered_Questions (via M7) + offer follow-up.\nReturns context with bot_response.\n\nAfter import: set OpenAI creds on both model/embeddings nodes, Pinecone cred on the vector store, and point 'Log Unanswered' at M7.\nIf your n8n version doesn't expose a similarity `score` in load mode, see README §7 note."
+      }
+    },
+    {
+      "id": "trg2",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [-820, 120],
+      "parameters": { "inputSource": "passthrough" }
+    },
+    {
+      "id": "emb2",
+      "name": "Embeddings OpenAI",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [-560, 320],
+      "parameters": { "model": "text-embedding-3-small", "options": {} },
+      "credentials": { "openAiApi": { "id": "REPLACE_ME_OPENAI_CRED_ID", "name": "OpenAi account" } }
+    },
+    {
+      "id": "pine2",
+      "name": "Pinecone Vector Store",
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePinecone",
+      "typeVersion": 1.1,
+      "position": [-560, 120],
+      "parameters": {
+        "mode": "load",
+        "pineconeIndex": { "__rl": true, "mode": "id", "value": "={{ $('When Called').item.json.clinic.pinecone_index }}" },
+        "prompt": "={{ $('When Called').item.json.user_message }}",
+        "topK": 5,
+        "includeDocumentMetadata": true,
+        "options": { "pineconeNamespace": "={{ $('When Called').item.json.clinic.pinecone_namespace }}" }
+      },
+      "credentials": { "pineconeApi": { "id": "REPLACE_ME_PINECONE_CRED_ID", "name": "PineconeApi account" } }
+    },
+    {
+      "id": "gate2",
+      "name": "Confidence Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-300, 120],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const ctx = $('When Called').first().json;\nconst minScore = ctx.clinic?.pinecone_min_score ?? 0.78;\nconst docs = $input.all();\n\nlet maxScore = 0;\nconst chunks = [];\nfor (const d of docs) {\n  const j = d.json || {};\n  const score = j.score ?? j.document?.score ?? (j.metadata?.score) ?? null;\n  if (typeof score === 'number' && score > maxScore) maxScore = score;\n  const text = j.pageContent ?? j.document?.pageContent ?? j.text ?? '';\n  if (text) chunks.push(text);\n}\n\n// If no numeric score is exposed by this n8n version, fall back to 'found if any chunk returned'.\nconst scoreKnown = maxScore > 0;\nconst found = scoreKnown ? (maxScore >= minScore) : (chunks.length > 0);\n\nreturn [{ json: {\n  ...ctx,\n  faq_found: found,\n  faq_max_score: maxScore,\n  faq_chunks: chunks.slice(0, 5).join('\\n---\\n')\n} }];"
+      }
+    },
+    {
+      "id": "if2",
+      "name": "Answer Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-40, 120],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.faq_found }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "ansmodel2",
+      "name": "OpenAI Answer Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [200, 320],
+      "parameters": { "model": { "__rl": true, "mode": "list", "value": "gpt-4o-mini" }, "options": { "temperature": 0.2 } },
+      "credentials": { "openAiApi": { "id": "REPLACE_ME_OPENAI_CRED_ID", "name": "OpenAi account" } }
+    },
+    {
+      "id": "anschain2",
+      "name": "Answer Chain",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [200, 120],
+      "parameters": {
+        "promptType": "define",
+        "text": "=Knowledge:\n{{ $json.faq_chunks }}\n\nPatient question: {{ $json.user_message }}",
+        "messages": {
+          "messageValues": [
+            { "message": "You are a friendly, professional dental clinic assistant. Answer the patient's question USING ONLY the Knowledge provided. If the Knowledge does not clearly contain the answer, say you're not certain and offer to have the team follow up — do NOT guess or invent clinic policies, prices, hours, or insurance details. Never give medical diagnosis or clinical advice; for symptoms, suggest contacting the clinic. Keep it to 2-4 short, warm sentences. Never state or imply that anything is booked or confirmed." }
+          ]
+        }
+      }
+    },
+    {
+      "id": "faqreply2",
+      "name": "Build FAQ Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 120],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ctx = $('When Called').item.json;\nconst answer = $json.text || $json.output || 'I can help with that — let me connect you with our team to be sure.';\nreturn { json: { ...ctx, bot_response: answer } };"
+      }
+    },
+    {
+      "id": "fallback2",
+      "name": "Fallback Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [200, 460],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ctx = $('When Called').item.json;\nconst msg = \"I'm not fully certain about that from our current information, and I don't want to give you the wrong details. I'd be happy to have our team follow up with you — could you share your name and the best phone or email to reach you?\";\nreturn { json: { ...ctx, bot_response: msg } };"
+      }
+    },
+    {
+      "id": "unrow2",
+      "name": "Make Unanswered Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 460],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ctx = $('When Called').item.json;\nreturn { json: {\n  tab: 'Unanswered_Questions',\n  operation: 'append',\n  sheet_id: ctx.clinic.sheet_id,\n  timestamp: $now.toISO(),\n  session_id: ctx.session_id,\n  user_question: ctx.user_message,\n  intent: ctx.intent,\n  pinecone_result_found: false,\n  confidence: ctx.faq_max_score || 0,\n  suggested_category: '',\n  staff_reviewed: false,\n  notes: (ctx.clinic.test_mode ? '[TEST] ' : '') + (ctx.summary || '')\n} };"
+      }
+    },
+    {
+      "id": "logun2",
+      "name": "Log Unanswered",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [720, 460],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "workflowId": { "__rl": true, "mode": "list", "value": "REPLACE_ME_M7_ID", "cachedResultName": "M7 — Logging Helper" },
+        "options": { "waitForSubWorkflow": true }
+      }
+    },
+    {
+      "id": "retctx2",
+      "name": "Return Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [980, 460],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: $('Fallback Reply').item.json };"
+      }
+    }
+  ],
+  "connections": {
+    "When Called": { "main": [[{ "node": "Pinecone Vector Store", "type": "main", "index": 0 }]] },
+    "Embeddings OpenAI": { "ai_embedding": [[{ "node": "Pinecone Vector Store", "type": "ai_embedding", "index": 0 }]] },
+    "Pinecone Vector Store": { "main": [[{ "node": "Confidence Gate", "type": "main", "index": 0 }]] },
+    "Confidence Gate": { "main": [[{ "node": "Answer Found?", "type": "main", "index": 0 }]] },
+    "Answer Found?": {
+      "main": [
+        [{ "node": "Answer Chain", "type": "main", "index": 0 }],
+        [{ "node": "Fallback Reply", "type": "main", "index": 0 }]
+      ]
+    },
+    "OpenAI Answer Model": { "ai_languageModel": [[{ "node": "Answer Chain", "type": "ai_languageModel", "index": 0 }]] },
+    "Answer Chain": { "main": [[{ "node": "Build FAQ Reply", "type": "main", "index": 0 }]] },
+    "Fallback Reply": { "main": [[{ "node": "Make Unanswered Row", "type": "main", "index": 0 }]] },
+    "Make Unanswered Row": { "main": [[{ "node": "Log Unanswered", "type": "main", "index": 0 }]] },
+    "Log Unanswered": { "main": [[{ "node": "Return Context", "type": "main", "index": 0 }]] }
+  }
+}

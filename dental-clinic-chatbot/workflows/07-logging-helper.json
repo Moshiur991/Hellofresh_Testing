@@ -1,0 +1,106 @@
+{
+  "name": "M7 — Logging Helper (Google Sheets)",
+  "nodes": [
+    {
+      "id": "note7",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-360, -160],
+      "parameters": {
+        "width": 520,
+        "height": 260,
+        "color": 5,
+        "content": "## M7 Logging Helper\nCalled by every module. Input item must contain:\n- `sheet_id` (spreadsheet ID)\n- `tab` (exact tab name)\n- `operation` = `append` or `upsert`\n- the row fields at TOP LEVEL matching the tab's column headers (auto-mapped)\n- for `upsert`: a `lead_key` column\n\nNodes: Execute Workflow Trigger → Switch(operation) → Sheets Append / Sheets Append-or-Update.\nSelect the Google Sheets credential in both Sheets nodes after import."
+      }
+    },
+    {
+      "id": "trg7",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [-360, 160],
+      "parameters": { "inputSource": "passthrough" }
+    },
+    {
+      "id": "sw7",
+      "name": "Append or Upsert?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [-120, 160],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "typeValidation": "loose" },
+                "conditions": [
+                  { "leftValue": "={{ $json.operation }}", "rightValue": "upsert", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "upsert"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "typeValidation": "loose" },
+                "conditions": [
+                  { "leftValue": "={{ $json.operation }}", "rightValue": "append", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "append"
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      }
+    },
+    {
+      "id": "upsert7",
+      "name": "Sheets — Append or Update",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [160, 60],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": { "__rl": true, "mode": "id", "value": "={{ $json.sheet_id }}" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "={{ $json.tab }}" },
+        "columns": { "mappingMode": "autoMapInputData", "matchingColumns": ["lead_key"], "value": {} },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "REPLACE_ME_SHEETS_CRED_ID", "name": "Google Sheets account" }
+      }
+    },
+    {
+      "id": "append7",
+      "name": "Sheets — Append",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [160, 260],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "append",
+        "documentId": { "__rl": true, "mode": "id", "value": "={{ $json.sheet_id }}" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "={{ $json.tab }}" },
+        "columns": { "mappingMode": "autoMapInputData", "value": {} },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "REPLACE_ME_SHEETS_CRED_ID", "name": "Google Sheets account" }
+      }
+    }
+  ],
+  "connections": {
+    "When Called": { "main": [[{ "node": "Append or Upsert?", "type": "main", "index": 0 }]] },
+    "Append or Upsert?": {
+      "main": [
+        [{ "node": "Sheets — Append or Update", "type": "main", "index": 0 }],
+        [{ "node": "Sheets — Append", "type": "main", "index": 0 }],
+        [{ "node": "Sheets — Append", "type": "main", "index": 0 }]
+      ]
+    }
+  }
+}

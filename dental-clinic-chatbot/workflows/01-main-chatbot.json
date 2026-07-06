@@ -1,0 +1,299 @@
+{
+  "name": "M1 — Main Chatbot (Chat Trigger → Classify → Route)",
+  "nodes": [
+    {
+      "id": "note1",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-900, -420],
+      "parameters": {
+        "width": 720,
+        "height": 360,
+        "color": 4,
+        "content": "## M1 Main Chatbot\nChat Trigger → Load Config → (OpenAI + Postgres memory + Structured parser) Intent+Extract → Build Context → Switch(intent) → sub-workflow modules → Assemble Final → Log Conversation (M7) → Respond.\n\n### After import\n1. Set OpenAI credential on 'OpenAI Chat Model'; Postgres credential on 'Postgres Chat Memory'.\n2. Fill your clinic values in 'Load Clinic Config' (or swap for a Google Sheets lookup on clinic_id for multi-clinic).\n3. Point the 5 'Route → Mx' Execute Workflow nodes at the imported modules 02–06.\n4. Point 'Log Conversation' at module 07.\n5. Pinecone index dim = 1536 (text-embedding-3-small).\n\nResponse mode = 'When Last Node Finishes' → the final 'Respond' node text is shown to the patient."
+      }
+    },
+    {
+      "id": "chat1",
+      "name": "Chat Trigger",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.1,
+      "position": [-880, 120],
+      "webhookId": "dental-chatbot-webhook",
+      "parameters": {
+        "public": true,
+        "options": {
+          "responseMode": "lastNode",
+          "title": "Dental Clinic Assistant",
+          "subtitle": "Ask a question or request an appointment. This is not a confirmed booking.",
+          "loadPreviousSession": "memory"
+        }
+      }
+    },
+    {
+      "id": "cfg1",
+      "name": "Load Clinic Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-640, 120],
+      "parameters": {
+        "assignments": { "assignments": [
+          { "id": "c1", "name": "clinic_id", "value": "smilecare", "type": "string" },
+          { "id": "c2", "name": "clinic_name", "value": "{{clinic_name}}", "type": "string" },
+          { "id": "c3", "name": "address", "value": "{{clinic_address}}", "type": "string" },
+          { "id": "c4", "name": "staff_email", "value": "{{staff_email}}", "type": "string" },
+          { "id": "c5", "name": "staff_phone", "value": "{{staff_phone}}", "type": "string" },
+          { "id": "c6", "name": "twilio_from", "value": "{{TWILIO_PHONE_NUMBER}}", "type": "string" },
+          { "id": "c7", "name": "pinecone_index", "value": "dental-clinic-kb", "type": "string" },
+          { "id": "c8", "name": "pinecone_namespace", "value": "smilecare_knowledge_base", "type": "string" },
+          { "id": "c9", "name": "sheet_id", "value": "{{GOOGLE_SHEET_ID}}", "type": "string" },
+          { "id": "c10", "name": "drive_folder_id", "value": "{{DRIVE_FOLDER_ID}}", "type": "string" },
+          { "id": "c11", "name": "hours_json", "value": "{\"mon\":\"9-17\",\"tue\":\"9-17\",\"wed\":\"9-17\",\"thu\":\"9-19\",\"fri\":\"9-15\",\"sat\":\"closed\",\"sun\":\"closed\"}", "type": "string" },
+          { "id": "c12", "name": "after_hours_message", "value": "Please note we are currently closed. Our team will follow up with you during our next business hours.", "type": "string" },
+          { "id": "c13", "name": "sms_enabled_patient", "value": false, "type": "boolean" },
+          { "id": "c14", "name": "sms_enabled_staff", "value": false, "type": "boolean" },
+          { "id": "c15", "name": "pinecone_min_score", "value": 0.78, "type": "number" },
+          { "id": "c16", "name": "test_mode", "value": true, "type": "boolean" },
+          { "id": "c17", "name": "chatInput", "value": "={{ $json.chatInput }}", "type": "string" },
+          { "id": "c18", "name": "sessionId", "value": "={{ $json.sessionId }}", "type": "string" }
+        ] },
+        "options": {}
+      }
+    },
+    {
+      "id": "openai1",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [-420, 340],
+      "parameters": {
+        "model": { "__rl": true, "mode": "list", "value": "gpt-4o-mini" },
+        "options": { "temperature": 0 }
+      },
+      "credentials": {
+        "openAiApi": { "id": "REPLACE_ME_OPENAI_CRED_ID", "name": "OpenAi account" }
+      }
+    },
+    {
+      "id": "mem1",
+      "name": "Postgres Chat Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+      "typeVersion": 1.3,
+      "position": [-300, 340],
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Chat Trigger').item.json.sessionId }}",
+        "tableName": "n8n_chat_histories",
+        "contextWindowLength": 12
+      },
+      "credentials": {
+        "postgres": { "id": "REPLACE_ME_POSTGRES_CRED_ID", "name": "Postgres account" }
+      }
+    },
+    {
+      "id": "parser1",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [-180, 340],
+      "parameters": {
+        "schemaType": "fromJson",
+        "jsonSchemaExample": "{\n  \"intent\": \"appointment_request\",\n  \"confidence\": 0.9,\n  \"urgency\": \"medium\",\n  \"summary\": \"User wants to book a cleaning.\",\n  \"patient\": {\n    \"name\": \"\",\n    \"phone\": \"\",\n    \"email\": \"\",\n    \"patient_type\": \"\",\n    \"service\": \"\",\n    \"preferred_date\": \"\",\n    \"preferred_time\": \"\",\n    \"existing_appt_datetime\": \"\",\n    \"new_preferred_datetime\": \"\",\n    \"symptoms\": \"\",\n    \"reason\": \"\"\n  },\n  \"missing_fields\": [\"phone\"],\n  \"next_question\": \"Could you share the best phone number to reach you?\"\n}"
+      }
+    },
+    {
+      "id": "chain1",
+      "name": "Intent + Extract",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [-420, 120],
+      "parameters": {
+        "promptType": "define",
+        "text": "=Latest patient message:\n{{ $json.chatInput }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are the intent router AND detail extractor for a dental clinic chatbot. You DO NOT write the patient-facing reply. Output ONLY the JSON object defined by the schema, using the conversation history for context.\n\nintent must be exactly one of: faq | appointment_request | cancellation_request | reschedule_request | emergency | new_patient_question | human_handoff | unknown\n\nRules:\n- emergency = severe tooth pain, broken/knocked-out tooth, swelling, bleeding, dental injury, possible infection, or severe pain after a procedure. If unsure between emergency and appointment, choose emergency (safer).\n- human_handoff = user explicitly asks for a person / phone call / front desk, or says the bot isn't helping.\n- confidence 0.0-1.0. urgency: high (emergency/same-day/severe), medium (appointment/new patient), low (general FAQ).\n- summary: one neutral sentence. NEVER include clinical advice or diagnosis. NEVER confirm any appointment.\n- patient.*: fill only fields the user has clearly provided across the whole conversation; leave others as \"\". Do not normalise phone numbers beyond copying the digits the user typed. Do not store long medical histories — put only a short symptom summary in patient.symptoms.\n- missing_fields: list the still-missing fields relevant to the intent (from: name, phone, email, patient_type, service, preferred_date, preferred_time, existing_appt_datetime, new_preferred_datetime, reason). For emergency/handoff the minimum needed is name and phone.\n- next_question: ONE friendly question asking for the single most important missing field, or \"\" if nothing essential is missing. If the user shared detailed medical information, gently note you only need a short symptom summary and their contact details for now.\nOutput JSON only."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "buildctx1",
+      "name": "Build Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-120, 120],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const cfg = $('Load Clinic Config').item.json;\nconst ai = $json.output ?? $json;\n\n// Config guard: refuse to run against an unconfigured clinic (prevents wrong-namespace queries)\nif (!cfg.pinecone_namespace || !cfg.sheet_id) {\n  throw new Error('Clinic config incomplete: pinecone_namespace or sheet_id is empty');\n}\n\n// Compute is_open_now from hours_json (local server time)\nlet isOpen = true;\ntry {\n  const hours = JSON.parse(cfg.hours_json || '{}');\n  const now = $now; // luxon DateTime\n  const dayKey = ['sun','mon','tue','wed','thu','fri','sat'][now.weekday % 7];\n  const spec = hours[dayKey];\n  if (!spec || spec === 'closed') { isOpen = false; }\n  else { const [o, c] = spec.split('-').map(Number); const h = now.hour; isOpen = h >= o && h < c; }\n} catch (e) { isOpen = true; }\n\nconst intent = ai.intent || 'unknown';\nconst patient = ai.patient || {};\n\nreturn { json: {\n  clinic: {\n    clinic_id: cfg.clinic_id, clinic_name: cfg.clinic_name, address: cfg.address,\n    staff_email: cfg.staff_email, staff_phone: cfg.staff_phone, twilio_from: cfg.twilio_from,\n    pinecone_index: cfg.pinecone_index, pinecone_namespace: cfg.pinecone_namespace,\n    sheet_id: cfg.sheet_id, drive_folder_id: cfg.drive_folder_id,\n    hours_json: cfg.hours_json, after_hours_message: cfg.after_hours_message,\n    sms_enabled_patient: cfg.sms_enabled_patient, sms_enabled_staff: cfg.sms_enabled_staff,\n    pinecone_min_score: cfg.pinecone_min_score, test_mode: cfg.test_mode, is_open_now: isOpen\n  },\n  session_id: cfg.sessionId,\n  timestamp: $now.toISO(),\n  user_message: cfg.chatInput,\n  intent, confidence: ai.confidence ?? 0, urgency: ai.urgency || 'normal',\n  summary: ai.summary || '', missing_fields: ai.missing_fields || [],\n  next_question: ai.next_question || '',\n  patient: {\n    name: patient.name || '', phone: patient.phone || '', email: patient.email || '',\n    patient_type: patient.patient_type || '', service: patient.service || '',\n    preferred_date: patient.preferred_date || '', preferred_time: patient.preferred_time || '',\n    existing_appt_datetime: patient.existing_appt_datetime || '', new_preferred_datetime: patient.new_preferred_datetime || '',\n    symptoms: patient.symptoms || '', reason: patient.reason || ''\n  },\n  bot_response: ''\n} };"
+      }
+    },
+    {
+      "id": "switch1",
+      "name": "Route By Intent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [160, 120],
+      "parameters": {
+        "rules": {
+          "values": [
+            { "conditions": { "options": { "caseSensitive": false, "typeValidation": "loose" }, "conditions": [
+              { "leftValue": "={{ $json.intent }}", "rightValue": "faq", "operator": { "type": "string", "operation": "equals" } },
+              { "leftValue": "={{ $json.intent }}", "rightValue": "new_patient_question", "operator": { "type": "string", "operation": "equals" } }
+            ], "combinator": "or" }, "outputKey": "FAQ" },
+            { "conditions": { "options": { "caseSensitive": false, "typeValidation": "loose" }, "conditions": [
+              { "leftValue": "={{ $json.intent }}", "rightValue": "appointment_request", "operator": { "type": "string", "operation": "equals" } }
+            ], "combinator": "and" }, "outputKey": "Appointment" },
+            { "conditions": { "options": { "caseSensitive": false, "typeValidation": "loose" }, "conditions": [
+              { "leftValue": "={{ $json.intent }}", "rightValue": "cancellation_request", "operator": { "type": "string", "operation": "equals" } },
+              { "leftValue": "={{ $json.intent }}", "rightValue": "reschedule_request", "operator": { "type": "string", "operation": "equals" } }
+            ], "combinator": "or" }, "outputKey": "CancelReschedule" },
+            { "conditions": { "options": { "caseSensitive": false, "typeValidation": "loose" }, "conditions": [
+              { "leftValue": "={{ $json.intent }}", "rightValue": "emergency", "operator": { "type": "string", "operation": "equals" } }
+            ], "combinator": "and" }, "outputKey": "Emergency" },
+            { "conditions": { "options": { "caseSensitive": false, "typeValidation": "loose" }, "conditions": [
+              { "leftValue": "={{ $json.intent }}", "rightValue": "human_handoff", "operator": { "type": "string", "operation": "equals" } }
+            ], "combinator": "and" }, "outputKey": "Handoff" }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      }
+    },
+    {
+      "id": "m2call",
+      "name": "Route → M2 FAQ",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [440, -140],
+      "parameters": {
+        "workflowId": { "__rl": true, "mode": "list", "value": "REPLACE_ME_M2_ID", "cachedResultName": "M2 — FAQ" },
+        "options": { "waitForSubWorkflow": true }
+      }
+    },
+    {
+      "id": "m3call",
+      "name": "Route → M3 Appointment",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [440, -20],
+      "parameters": {
+        "workflowId": { "__rl": true, "mode": "list", "value": "REPLACE_ME_M3_ID", "cachedResultName": "M3 — Appointment" },
+        "options": { "waitForSubWorkflow": true }
+      }
+    },
+    {
+      "id": "m4call",
+      "name": "Route → M4 Cancel/Reschedule",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [440, 100],
+      "parameters": {
+        "workflowId": { "__rl": true, "mode": "list", "value": "REPLACE_ME_M4_ID", "cachedResultName": "M4 — Cancel/Reschedule" },
+        "options": { "waitForSubWorkflow": true }
+      }
+    },
+    {
+      "id": "m5call",
+      "name": "Route → M5 Emergency",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [440, 220],
+      "parameters": {
+        "workflowId": { "__rl": true, "mode": "list", "value": "REPLACE_ME_M5_ID", "cachedResultName": "M5 — Emergency" },
+        "options": { "waitForSubWorkflow": true }
+      }
+    },
+    {
+      "id": "m6call",
+      "name": "Route → M6 Handoff",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [440, 340],
+      "parameters": {
+        "workflowId": { "__rl": true, "mode": "list", "value": "REPLACE_ME_M6_ID", "cachedResultName": "M6 — Human Handoff" },
+        "options": { "waitForSubWorkflow": true }
+      }
+    },
+    {
+      "id": "unknown1",
+      "name": "Unknown → Clarify",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [440, 460],
+      "parameters": {
+        "assignments": { "assignments": [
+          { "id": "u1", "name": "bot_response", "value": "I'm sorry, I didn't quite catch that. I can help with clinic questions, booking, cancelling or rescheduling an appointment, dental emergencies, or connecting you with our team. Could you tell me a little more about what you need?", "type": "string" }
+        ] },
+        "include": "all",
+        "options": {}
+      }
+    },
+    {
+      "id": "assemble1",
+      "name": "Assemble Final",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 120],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const c = $json;\nconst clinic = c.clinic || $('Build Context').item.json.clinic;\nlet reply = c.bot_response || 'Thank you — our team will follow up with you.';\n\n// After-hours expectation for actionable intents\nconst actionable = ['appointment_request','cancellation_request','reschedule_request','human_handoff','emergency'];\nif (clinic && clinic.is_open_now === false && actionable.includes(c.intent)) {\n  reply = reply + '\\n\\n' + (clinic.after_hours_message || '');\n}\n\n// Build the Conversations log row (consumed by M7)\nreturn { json: {\n  bot_response: reply,\n  tab: 'Conversations',\n  operation: 'append',\n  sheet_id: clinic.sheet_id,\n  timestamp: c.timestamp || $now.toISO(),\n  session_id: c.session_id,\n  user_message: c.user_message,\n  intent: c.intent,\n  confidence: c.confidence,\n  urgency: c.urgency,\n  patient_name: c.patient?.name || '',\n  phone: c.patient?.phone || '',\n  email: c.patient?.email || '',\n  status: 'Logged',\n  notes: (clinic.test_mode ? '[TEST] ' : '') + (c.summary || '')\n} };"
+      }
+    },
+    {
+      "id": "logconv1",
+      "name": "Log Conversation",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [960, 120],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "workflowId": { "__rl": true, "mode": "list", "value": "REPLACE_ME_M7_ID", "cachedResultName": "M7 — Logging Helper" },
+        "options": { "waitForSubWorkflow": true }
+      }
+    },
+    {
+      "id": "respond1",
+      "name": "Respond",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1200, 120],
+      "parameters": {
+        "assignments": { "assignments": [
+          { "id": "r1", "name": "output", "value": "={{ $('Assemble Final').item.json.bot_response }}", "type": "string" }
+        ] },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Chat Trigger": { "main": [[{ "node": "Load Clinic Config", "type": "main", "index": 0 }]] },
+    "Load Clinic Config": { "main": [[{ "node": "Intent + Extract", "type": "main", "index": 0 }]] },
+    "OpenAI Chat Model": { "ai_languageModel": [[{ "node": "Intent + Extract", "type": "ai_languageModel", "index": 0 }]] },
+    "Postgres Chat Memory": { "ai_memory": [[{ "node": "Intent + Extract", "type": "ai_memory", "index": 0 }]] },
+    "Structured Output Parser": { "ai_outputParser": [[{ "node": "Intent + Extract", "type": "ai_outputParser", "index": 0 }]] },
+    "Intent + Extract": { "main": [[{ "node": "Build Context", "type": "main", "index": 0 }]] },
+    "Build Context": { "main": [[{ "node": "Route By Intent", "type": "main", "index": 0 }]] },
+    "Route By Intent": {
+      "main": [
+        [{ "node": "Route → M2 FAQ", "type": "main", "index": 0 }],
+        [{ "node": "Route → M3 Appointment", "type": "main", "index": 0 }],
+        [{ "node": "Route → M4 Cancel/Reschedule", "type": "main", "index": 0 }],
+        [{ "node": "Route → M5 Emergency", "type": "main", "index": 0 }],
+        [{ "node": "Route → M6 Handoff", "type": "main", "index": 0 }],
+        [{ "node": "Unknown → Clarify", "type": "main", "index": 0 }]
+      ]
+    },
+    "Route → M2 FAQ": { "main": [[{ "node": "Assemble Final", "type": "main", "index": 0 }]] },
+    "Route → M3 Appointment": { "main": [[{ "node": "Assemble Final", "type": "main", "index": 0 }]] },
+    "Route → M4 Cancel/Reschedule": { "main": [[{ "node": "Assemble Final", "type": "main", "index": 0 }]] },
+    "Route → M5 Emergency": { "main": [[{ "node": "Assemble Final", "type": "main", "index": 0 }]] },
+    "Route → M6 Handoff": { "main": [[{ "node": "Assemble Final", "type": "main", "index": 0 }]] },
+    "Unknown → Clarify": { "main": [[{ "node": "Assemble Final", "type": "main", "index": 0 }]] },
+    "Assemble Final": { "main": [[{ "node": "Log Conversation", "type": "main", "index": 0 }]] },
+    "Log Conversation": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  }
+}

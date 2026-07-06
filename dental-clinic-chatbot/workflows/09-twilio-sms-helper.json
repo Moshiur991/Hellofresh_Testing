@@ -1,0 +1,155 @@
+{
+  "name": "M9 — Twilio SMS Helper (gated + logged)",
+  "nodes": [
+    {
+      "id": "note9",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-560, -200],
+      "parameters": {
+        "width": 620,
+        "height": 300,
+        "color": 5,
+        "content": "## M9 Twilio SMS Helper\nInput item: `to`, `body`, `message_type`, `from` (Twilio number), `enabled` (bool from config flag), `session_id`, `sheet_id`.\n\nLogic: validate number (E.164) AND `enabled == true` → send via Twilio; ALWAYS write a row to `SMS_Log` (actually_sent + sid or reason).\n\nIn v1 `enabled` is FALSE, so nothing is actually sent — you'll see intended messages in SMS_Log to review before going live.\nSelect Twilio + Google Sheets credentials after import."
+      }
+    },
+    {
+      "id": "trg9",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [-560, 200],
+      "parameters": { "inputSource": "passthrough" }
+    },
+    {
+      "id": "gate9",
+      "name": "Validate + Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-320, 200],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const to = String($json.to || '').trim();\nconst e164 = /^\\+?[1-9]\\d{7,14}$/;\nconst valid = e164.test(to.replace(/[\\s()-]/g, ''));\nconst enabled = $json.enabled === true || $json.enabled === 'TRUE' || $json.enabled === 'true';\nconst shouldSend = valid && enabled;\nreturn { json: { ...$json, number_valid: valid, should_send: shouldSend, skip_reason: !enabled ? 'sms_disabled_v1' : (!valid ? 'invalid_number' : '') } };"
+      }
+    },
+    {
+      "id": "if9",
+      "name": "Should Send?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-80, 200],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.should_send }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "twilio9",
+      "name": "Twilio — Send SMS",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [180, 100],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "parameters": {
+        "resource": "sms",
+        "operation": "send",
+        "from": "={{ $json.from }}",
+        "to": "={{ $json.to }}",
+        "message": "={{ $json.body }}",
+        "options": {}
+      },
+      "credentials": {
+        "twilioApi": { "id": "REPLACE_ME_TWILIO_CRED_ID", "name": "Twilio account" }
+      }
+    },
+    {
+      "id": "rowSent9",
+      "name": "Row — Sent",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [440, 60],
+      "parameters": {
+        "assignments": { "assignments": [
+          { "id": "s1", "name": "timestamp", "value": "={{ $now.toISO() }}", "type": "string" },
+          { "id": "s2", "name": "session_id", "value": "={{ $('When Called').item.json.session_id }}", "type": "string" },
+          { "id": "s3", "name": "to_number", "value": "={{ $('When Called').item.json.to }}", "type": "string" },
+          { "id": "s4", "name": "message_type", "value": "={{ $('When Called').item.json.message_type }}", "type": "string" },
+          { "id": "s5", "name": "body", "value": "={{ $('When Called').item.json.body }}", "type": "string" },
+          { "id": "s6", "name": "actually_sent", "value": true, "type": "boolean" },
+          { "id": "s7", "name": "twilio_sid", "value": "={{ $json.sid || '' }}", "type": "string" },
+          { "id": "s8", "name": "error", "value": "={{ $json.error?.message || '' }}", "type": "string" },
+          { "id": "s9", "name": "sheet_id", "value": "={{ $('When Called').item.json.sheet_id }}", "type": "string" },
+          { "id": "s10", "name": "tab", "value": "SMS_Log", "type": "string" }
+        ] },
+        "options": {}
+      }
+    },
+    {
+      "id": "rowSkip9",
+      "name": "Row — Not Sent",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [180, 340],
+      "parameters": {
+        "assignments": { "assignments": [
+          { "id": "k1", "name": "timestamp", "value": "={{ $now.toISO() }}", "type": "string" },
+          { "id": "k2", "name": "session_id", "value": "={{ $json.session_id }}", "type": "string" },
+          { "id": "k3", "name": "to_number", "value": "={{ $json.to }}", "type": "string" },
+          { "id": "k4", "name": "message_type", "value": "={{ $json.message_type }}", "type": "string" },
+          { "id": "k5", "name": "body", "value": "={{ $json.body }}", "type": "string" },
+          { "id": "k6", "name": "actually_sent", "value": false, "type": "boolean" },
+          { "id": "k7", "name": "twilio_sid", "value": "", "type": "string" },
+          { "id": "k8", "name": "error", "value": "={{ $json.skip_reason }}", "type": "string" },
+          { "id": "k9", "name": "sheet_id", "value": "={{ $json.sheet_id }}", "type": "string" },
+          { "id": "k10", "name": "tab", "value": "SMS_Log", "type": "string" }
+        ] },
+        "options": {}
+      }
+    },
+    {
+      "id": "log9",
+      "name": "Write SMS_Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [700, 200],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "append",
+        "documentId": { "__rl": true, "mode": "id", "value": "={{ $json.sheet_id }}" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "SMS_Log" },
+        "columns": { "mappingMode": "autoMapInputData", "value": {} },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "REPLACE_ME_SHEETS_CRED_ID", "name": "Google Sheets account" }
+      }
+    }
+  ],
+  "connections": {
+    "When Called": { "main": [[{ "node": "Validate + Gate", "type": "main", "index": 0 }]] },
+    "Validate + Gate": { "main": [[{ "node": "Should Send?", "type": "main", "index": 0 }]] },
+    "Should Send?": {
+      "main": [
+        [{ "node": "Twilio — Send SMS", "type": "main", "index": 0 }],
+        [{ "node": "Row — Not Sent", "type": "main", "index": 0 }]
+      ]
+    },
+    "Twilio — Send SMS": {
+      "main": [
+        [{ "node": "Row — Sent", "type": "main", "index": 0 }],
+        [{ "node": "Row — Sent", "type": "main", "index": 0 }]
+      ]
+    },
+    "Row — Sent": { "main": [[{ "node": "Write SMS_Log", "type": "main", "index": 0 }]] },
+    "Row — Not Sent": { "main": [[{ "node": "Write SMS_Log", "type": "main", "index": 0 }]] }
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "name": "M5 — Emergency",
+  "nodes": [
+    {
+      "id": "note5",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-900, -280],
+      "parameters": {
+        "width": 660,
+        "height": 260,
+        "color": 2,
+        "content": "## M5 Emergency\nHigh-priority path. ALWAYS notifies staff (⚠️ email) even with partial info — so urgent cases are never missed. Staff SMS is sent via M9 (gated by sms_enabled_staff). Never diagnoses; advises urgent medical care on red-flag symptoms. Upserts to Escalations (urgency high).\nAfter import: point 'Upsert Escalation'→M7, 'Notify Staff (URGENT)'→M8, 'Staff Emergency SMS'→M9."
+      }
+    },
+    { "id": "trg5", "name": "When Called", "type": "n8n-nodes-base.executeWorkflowTrigger", "typeVersion": 1.1, "position": [-900, 120], "parameters": { "inputSource": "passthrough" } },
+    {
+      "id": "build5",
+      "name": "Build Reply + Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-660, 120],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ctx = $json;\nconst p = ctx.patient || {};\nconst clinic = ctx.clinic || {};\nconst day = $now.format('yyyy-LL-dd');\nconst leadKey = `${clinic.clinic_id}|${p.phone || 'nophone'}|emergency|${day}`;\nconst blob = `${ctx.user_message} ${p.symptoms || ''}`.toLowerCase();\nconst redFlags = ['swelling','swollen','breath','breathing','bleeding won\\'t stop','uncontrolled','fever','faint','injury','accident','knocked out'];\nconst hasRedFlag = redFlags.some(k => blob.includes(k));\n\nlet reply = `I'm sorry you're dealing with that. I can pass this to our clinic team right away so someone can follow up quickly.`;\nif (!(p.name && p.phone)) { reply += ` Could you share your full name and a phone number so the team can reach you?`; }\nif (hasRedFlag) { reply += ` \\n\\n⚠️ If you have severe swelling, trouble breathing, uncontrolled bleeding, a high fever, or a serious injury, please seek urgent or emergency medical care immediately — don't wait for a callback.`; }\nreply += ` I'm not able to diagnose, but the team will review this as a priority.`;\n\nconst row = {\n  tab: 'Escalations', operation: 'upsert', sheet_id: clinic.sheet_id, lead_key: leadKey,\n  timestamp: ctx.timestamp || $now.toISO(), session_id: ctx.session_id, patient_name: p.name || '',\n  phone: p.phone || '', email: p.email || '', issue_type: 'emergency', urgency: 'high',\n  summary: (clinic.test_mode ? '[TEST] ' : '') + (ctx.summary || ctx.user_message),\n  staff_notified: true, sms_sent: false, status: 'New',\n  notes: p.symptoms ? `Symptoms: ${p.symptoms}` : ''\n};\n\nconst emailBody = `⚠️ EMERGENCY — REVIEW NOW\\n\\nPatient: ${p.name || '(not provided yet)'}\\nPhone: ${p.phone || '(not provided yet)'}\\nEmail: ${p.email || '-'}\\nReported issue: ${ctx.summary || ctx.user_message}\\nSymptoms: ${p.symptoms || '-'}\\nRed-flag keywords present: ${hasRedFlag ? 'YES' : 'no'}\\n\\nOriginal message: \"${ctx.user_message}\"\\n\\nRecommended next action: Contact the patient as a priority. If red-flag symptoms, patient was advised to seek urgent medical care.`;\nconst email = { to: clinic.staff_email, subject: `⚠️ EMERGENCY — [${clinic.clinic_name}] — ${p.name || 'unknown patient'}`, body: (clinic.test_mode ? '[TEST MODE]\\n' : '') + emailBody, reply_to: p.email || '' };\n\nconst staffSms = { to: clinic.staff_phone, body: `URGENT dental: ${p.name || 'unknown'} ${p.phone || 'no #'}. Issue: ${(ctx.summary || ctx.user_message).slice(0,90)}. Logged in Sheets. Review now.`, message_type: 'emergency_staff_alert', from: clinic.twilio_from, enabled: clinic.sms_enabled_staff, session_id: ctx.session_id, sheet_id: clinic.sheet_id };\n\nreturn { json: { ...ctx, bot_response: reply, _row: row, _email: email, _sms: staffSms } };"
+      }
+    },
+    { "id": "shapelog5", "name": "Shape Log Row", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [-420, 120], "parameters": { "mode": "runOnceForEachItem", "jsCode": "return { json: $json._row };" } },
+    { "id": "log5", "name": "Upsert Escalation", "type": "n8n-nodes-base.executeWorkflow", "typeVersion": 1.2, "position": [-180, 120], "onError": "continueRegularOutput", "parameters": { "workflowId": { "__rl": true, "mode": "list", "value": "REPLACE_ME_M7_ID", "cachedResultName": "M7 — Logging Helper" }, "options": { "waitForSubWorkflow": true } } },
+    { "id": "shapemail5", "name": "Shape Email", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [60, 120], "parameters": { "mode": "runOnceForEachItem", "jsCode": "return { json: $('Build Reply + Rows').item.json._email };" } },
+    { "id": "mail5", "name": "Notify Staff (URGENT)", "type": "n8n-nodes-base.executeWorkflow", "typeVersion": 1.2, "position": [300, 120], "onError": "continueRegularOutput", "parameters": { "workflowId": { "__rl": true, "mode": "list", "value": "REPLACE_ME_M8_ID", "cachedResultName": "M8 — Staff Email Helper" }, "options": { "waitForSubWorkflow": true } } },
+    { "id": "shapesms5", "name": "Shape Staff SMS", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [540, 120], "parameters": { "mode": "runOnceForEachItem", "jsCode": "return { json: $('Build Reply + Rows').item.json._sms };" } },
+    { "id": "sms5", "name": "Staff Emergency SMS", "type": "n8n-nodes-base.executeWorkflow", "typeVersion": 1.2, "position": [780, 120], "onError": "continueRegularOutput", "parameters": { "workflowId": { "__rl": true, "mode": "list", "value": "REPLACE_ME_M9_ID", "cachedResultName": "M9 — Twilio SMS Helper" }, "options": { "waitForSubWorkflow": true } } },
+    { "id": "ret5", "name": "Return Context", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [1020, 120], "parameters": { "mode": "runOnceForEachItem", "jsCode": "const c = { ...$('Build Reply + Rows').item.json }; delete c._row; delete c._email; delete c._sms; return { json: c };" } }
+  ],
+  "connections": {
+    "When Called": { "main": [[{ "node": "Build Reply + Rows", "type": "main", "index": 0 }]] },
+    "Build Reply + Rows": { "main": [[{ "node": "Shape Log Row", "type": "main", "index": 0 }]] },
+    "Shape Log Row": { "main": [[{ "node": "Upsert Escalation", "type": "main", "index": 0 }]] },
+    "Upsert Escalation": { "main": [[{ "node": "Shape Email", "type": "main", "index": 0 }]] },
+    "Shape Email": { "main": [[{ "node": "Notify Staff (URGENT)", "type": "main", "index": 0 }]] },
+    "Notify Staff (URGENT)": { "main": [[{ "node": "Shape Staff SMS", "type": "main", "index": 0 }]] },
+    "Shape Staff SMS": { "main": [[{ "node": "Staff Emergency SMS", "type": "main", "index": 0 }]] },
+    "Staff Emergency SMS": { "main": [[{ "node": "Return Context", "type": "main", "index": 0 }]] }
+  }
+}

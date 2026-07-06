@@ -1,0 +1,86 @@
+{
+  "name": "M8 — Staff Email Helper (Gmail)",
+  "nodes": [
+    {
+      "id": "note8",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-360, -160],
+      "parameters": {
+        "width": 520,
+        "height": 240,
+        "color": 5,
+        "content": "## M8 Staff Email Helper\nInput item must contain: `to`, `subject`, `body`, and optional `reply_to`.\nSends via Gmail. On failure, returns `{ email_error: <message> }` so the caller can log it to Error_Log (does not stop the caller).\nSelect the Gmail credential after import."
+      }
+    },
+    {
+      "id": "trg8",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [-360, 140],
+      "parameters": { "inputSource": "passthrough" }
+    },
+    {
+      "id": "gmail8",
+      "name": "Gmail — Send To Staff",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [-100, 140],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $json.to }}",
+        "subject": "={{ $json.subject }}",
+        "emailType": "text",
+        "message": "={{ $json.body }}",
+        "options": { "replyTo": "={{ $json.reply_to || '' }}" }
+      },
+      "credentials": {
+        "gmailOAuth2": { "id": "REPLACE_ME_GMAIL_CRED_ID", "name": "Gmail account" }
+      }
+    },
+    {
+      "id": "ok8",
+      "name": "Return Success",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [180, 40],
+      "parameters": {
+        "assignments": { "assignments": [
+          { "id": "a1", "name": "email_sent", "value": true, "type": "boolean" },
+          { "id": "a2", "name": "email_error", "value": "", "type": "string" }
+        ] },
+        "options": {}
+      }
+    },
+    {
+      "id": "err8",
+      "name": "Return Error",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [180, 260],
+      "parameters": {
+        "assignments": { "assignments": [
+          { "id": "b1", "name": "email_sent", "value": false, "type": "boolean" },
+          { "id": "b2", "name": "email_error", "value": "={{ $json.error?.message || 'gmail send failed' }}", "type": "string" }
+        ] },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "When Called": { "main": [[{ "node": "Gmail — Send To Staff", "type": "main", "index": 0 }]] },
+    "Gmail — Send To Staff": {
+      "main": [
+        [{ "node": "Return Success", "type": "main", "index": 0 }],
+        [{ "node": "Return Error", "type": "main", "index": 0 }]
+      ]
+    }
+  }
+}
