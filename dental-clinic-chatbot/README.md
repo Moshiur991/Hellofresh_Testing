@@ -69,7 +69,7 @@ A modular, multi-clinic dental chatbot for n8n. Patients chat via the **n8n Chat
 
 | Module | Purpose | File | Trigger |
 |---|---|---|---|
-| 0 | Clinic config (multi-clinic) | in `Clinics` sheet tab + Set node inside Module 1 | — |
+| 0 | Clinic config (multi-clinic) | `workflows/00-clinic-config-lookup.json` (Sheets lookup) or the Set node inside Module 1 | — |
 | 1 | Main chatbot / router | `workflows/01-main-chatbot.json` | Chat Trigger |
 | 2 | FAQ (Pinecone RAG) | `workflows/02-faq-module.json` | Execute Sub-workflow |
 | 3 | Appointment request | `workflows/03-appointment-module.json` | Execute Sub-workflow |
@@ -115,7 +115,11 @@ Two layers so you never edit nodes to onboard a clinic:
 - `hours_json` example: `{"mon":"9-17","tue":"9-17","wed":"9-17","thu":"9-19","fri":"9-15","sat":"closed","sun":"closed"}`
 - `sms_enabled_*`: `TRUE`/`FALSE`. Keep both `FALSE` for v1.
 
-**(b) Set node "Load Clinic Config" inside Module 1** — for v1 with a single clinic you can hard-code the values here (fastest). For true multi-clinic, replace it with a Google Sheets *Lookup* on `clinic_id` (the Chat Trigger can pass `clinic_id` as a query param / metadata). The workflow ships with the Set-node version and a commented note on how to switch to the lookup.
+**(b) Two config options — pick one:**
+- **Single clinic (fastest):** hard-code values in the "Load Clinic Config" Set node inside `01-main-chatbot.json`.
+- **Multi-clinic, zero node edits (recommended once you have >1 clinic):** import `workflows/00-clinic-config-lookup.json` and splice its three nodes into M1 (instructions on the sticky note inside it). It reads the clinic's row from the `Clinics` tab by `clinic_id` (taken from the chat URL `?clinic_id=...`, else a default), coerces booleans/numbers, and outputs the **exact same fields** the Set node did — so the rest of M1 is unchanged. Onboarding a new clinic is then just a new row.
+
+**Sample data:** `clinics-sample.csv` has two ready rows (a real-style `smilecare` clinic and an always-open `test` clinic) — paste into the `Clinics` tab and edit the two `PASTE_*` IDs.
 
 > **Loophole prevented: "Multiple clinics using the wrong Pinecone namespace / Sheet."** Because namespace, sheet_id and drive_folder_id all come from the *same* config row keyed by `clinic_id`, there's a single source of truth — a clinic can't half-switch. Add a **guard**: if `pinecone_namespace` or `sheet_id` is empty, the workflow throws to the Error Log instead of querying a default namespace.
 
@@ -150,7 +154,7 @@ Create **one spreadsheet** ("Dental Chatbot — <Clinic>"), copy its ID into the
 Create folder **`Dental Clinic AI Knowledge Base`** with subfolders:
 `FAQ, Services, Policies, Insurance, Pricing, Emergency Info, New Patient Info, Post-Treatment Instructions`
 
-- Put clinic docs (Google Docs / PDFs / .txt) in the matching subfolder.
+- Put clinic docs (Google Docs / PDFs / .txt) in the matching subfolder. **A ready-made seed set is in `seed-knowledge-base/`** — upload those files (fictional SmileCare Dental) to test ingestion + FAQ retrieval before writing your own. See `seed-knowledge-base/README.md`.
 - The **subfolder name becomes the `category` metadata** in Pinecone (Module 10 reads it), which powers category filtering and the Unanswered-Questions "suggested_category".
 - Copy the top folder's ID into `drive_folder_id` in the config.
 

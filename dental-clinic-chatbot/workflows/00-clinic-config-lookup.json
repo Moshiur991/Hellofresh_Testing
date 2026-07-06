@@ -1,0 +1,84 @@
+{
+  "name": "M0 — Clinic Config Lookup (multi-clinic, zero node edits)",
+  "nodes": [
+    {
+      "id": "note0",
+      "name": "How to use",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-1000, -420],
+      "parameters": {
+        "width": 820,
+        "height": 460,
+        "color": 4,
+        "content": "## M0 Clinic Config Lookup\nDrop-in replacement for the hard-coded 'Load Clinic Config' Set node in M1. Onboarding a new clinic then means **adding a row to the Clinics sheet — no node edits**.\n\n### One-time bootstrap\nThe ONLY hard-coded value is the master spreadsheet ID (the sheet that holds the `Clinics` tab). Put it in the 'Read Clinics Tab' node's Document ID (replace `{{GOOGLE_SHEET_ID}}`). Everything else — including each clinic's own sheet_id — comes from the row.\n\n### How clinic_id is chosen\n'Resolve clinic_id' reads it from the chat widget URL query param (`?clinic_id=smilecare`) if present, else falls back to DEFAULT_CLINIC_ID. Set your default below.\n\n### To splice into M1\n1. In M1, delete the 'Load Clinic Config' Set node.\n2. Copy 'Resolve clinic_id', 'Read Clinics Tab', and 'Build Clinic Config' from here (select all three → Ctrl/Cmd-C, paste into M1).\n3. Wire: Chat Trigger → Resolve clinic_id → Read Clinics Tab → Build Clinic Config → Intent + Extract.\n'Build Clinic Config' outputs the EXACT same fields the old Set node did (plus chatInput/sessionId), so the rest of M1 is unchanged.\n\n### Clinics tab columns (row 1)\nclinic_id | clinic_name | address | hours_json | staff_email | staff_phone | twilio_from | pinecone_index | pinecone_namespace | sheet_id | drive_folder_id | sms_enabled_patient | sms_enabled_staff | pinecone_min_score | test_mode | after_hours_message\n\n(booleans as TRUE/FALSE, pinecone_min_score as a number e.g. 0.78)"
+      }
+    },
+    {
+      "id": "chat0",
+      "name": "Chat Trigger",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.1,
+      "position": [-1000, 160],
+      "webhookId": "dental-chatbot-config-demo",
+      "parameters": {
+        "public": true,
+        "options": { "responseMode": "lastNode", "title": "Dental Clinic Assistant" }
+      }
+    },
+    {
+      "id": "resolve0",
+      "name": "Resolve clinic_id",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-760, 160],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const DEFAULT_CLINIC_ID = 'smilecare';\n// The chat widget can pass ?clinic_id=... ; n8n surfaces query params under metadata on some versions.\nconst j = $json;\nconst fromMeta = j.metadata?.clinic_id || j.query?.clinic_id || j.clinic_id || '';\nconst clinic_id = (fromMeta && String(fromMeta).trim()) || DEFAULT_CLINIC_ID;\nreturn { json: { clinic_id, chatInput: j.chatInput, sessionId: j.sessionId } };"
+      }
+    },
+    {
+      "id": "read0",
+      "name": "Read Clinics Tab",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [-520, 160],
+      "parameters": {
+        "operation": "read",
+        "documentId": { "__rl": true, "mode": "id", "value": "{{GOOGLE_SHEET_ID}}" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "Clinics" },
+        "options": {}
+      },
+      "credentials": { "googleSheetsOAuth2Api": { "id": "REPLACE_ME_SHEETS_CRED_ID", "name": "Google Sheets account" } }
+    },
+    {
+      "id": "build0",
+      "name": "Build Clinic Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-280, 160],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const wanted = $('Resolve clinic_id').first().json.clinic_id;\nconst chat = $('Resolve clinic_id').first().json;\nconst rows = $input.all().map(i => i.json);\nconst row = rows.find(r => String(r.clinic_id).trim() === String(wanted).trim());\n\nif (!row) { throw new Error(`No Clinics row found for clinic_id='${wanted}'. Add a row to the Clinics tab.`); }\nif (!row.pinecone_namespace || !row.sheet_id) { throw new Error(`Clinics row for '${wanted}' is missing pinecone_namespace or sheet_id.`); }\n\nconst toBool = v => v === true || String(v).toUpperCase() === 'TRUE' || String(v) === '1';\nconst toNum = (v, d) => { const n = parseFloat(v); return isNaN(n) ? d : n; };\n\nreturn [{ json: {\n  clinic_id: row.clinic_id,\n  clinic_name: row.clinic_name || '',\n  address: row.address || '',\n  staff_email: row.staff_email || '',\n  staff_phone: row.staff_phone || '',\n  twilio_from: row.twilio_from || '',\n  pinecone_index: row.pinecone_index || 'dental-clinic-kb',\n  pinecone_namespace: row.pinecone_namespace,\n  sheet_id: row.sheet_id,\n  drive_folder_id: row.drive_folder_id || '',\n  hours_json: row.hours_json || '{}',\n  after_hours_message: row.after_hours_message || 'We are currently closed. Our team will follow up during business hours.',\n  sms_enabled_patient: toBool(row.sms_enabled_patient),\n  sms_enabled_staff: toBool(row.sms_enabled_staff),\n  pinecone_min_score: toNum(row.pinecone_min_score, 0.78),\n  test_mode: toBool(row.test_mode),\n  chatInput: chat.chatInput,\n  sessionId: chat.sessionId\n} }];"
+      }
+    },
+    {
+      "id": "nextnote0",
+      "name": "→ continue into M1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-40, 60],
+      "parameters": {
+        "width": 300,
+        "height": 200,
+        "color": 6,
+        "content": "From here, wire into M1's\n**'Intent + Extract'** node.\nThe output object matches the\nold Set node 1:1."
+      }
+    }
+  ],
+  "connections": {
+    "Chat Trigger": { "main": [[{ "node": "Resolve clinic_id", "type": "main", "index": 0 }]] },
+    "Resolve clinic_id": { "main": [[{ "node": "Read Clinics Tab", "type": "main", "index": 0 }]] },
+    "Read Clinics Tab": { "main": [[{ "node": "Build Clinic Config", "type": "main", "index": 0 }]] }
+  }
+}
