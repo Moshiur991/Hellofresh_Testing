@@ -1,0 +1,178 @@
+{
+  "_comment": "POST this (minus this comment) to https://api.vapi.ai/assistant with your Vapi API key. Replace REPLACE_ME_* values first. Verify field names against current Vapi docs before importing — this API evolves.",
+  "name": "SmileCare Dental Voice Assistant",
+  "firstMessage": "Thanks for calling {{clinic_name}}! This is our virtual assistant — how can I help you today?",
+  "voicemailMessage": "Hi, this is the virtual assistant for {{clinic_name}}. Sorry we couldn't take your call — please call back during business hours or leave a message after the tone.",
+  "endCallMessage": "Thanks for calling {{clinic_name}}, take care!",
+  "endCallPhrases": ["goodbye", "that's all, thanks", "bye now"],
+  "silenceTimeoutSeconds": 20,
+  "maxDurationSeconds": 900,
+  "backgroundSound": "office",
+  "server": {
+    "url": "REPLACE_ME_N8N_WEBHOOK_URL",
+    "_comment": "e.g. https://your-n8n-host/webhook/vapi-dental-assistant — receives BOTH tool-calls and end-of-call-report messages"
+  },
+  "transcriber": {
+    "provider": "deepgram",
+    "model": "nova-2",
+    "language": "en",
+    "_comment": "Fast, accurate, low-latency STT. Tune endpointing below if the bot cuts callers off or waits too long."
+  },
+  "model": {
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "temperature": 0.3,
+    "_comment_model": "gpt-4o-mini balances speed + reliable function calling. Try Groq-hosted Llama if you need even lower latency and can tolerate slightly less reliable tool use.",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the voice assistant for {{clinic_name}}, a dental clinic, answering phone calls. Speak naturally and warmly, like a friendly front-desk team member. Keep responses SHORT — 1 to 3 sentences — since this is a live phone call; never read long lists.\n\nGolden rules:\n- You can NEVER give medical advice, a diagnosis, or medical certainty. For any symptom question, express empathy and offer to log it or connect them with the team.\n- You can NEVER say an appointment is finally confirmed. Bookings you make are TENTATIVE pending staff confirmation — always say so, in plain language (e.g. \"I've tentatively held that time\" not \"you're booked\").\n- Do not invent clinic policies, prices, hours, or insurance details. Only state facts from your knowledge base or a tool result.\n- If the caller describes a dental emergency (severe pain, swelling, bleeding, knocked-out or broken tooth, possible infection, post-procedure pain), call log_emergency right away. If they mention severe swelling, trouble breathing, uncontrolled bleeding, high fever, or serious injury, clearly tell them to seek urgent or emergency medical care immediately.\n- If the caller wants to speak to a person, or sounds frustrated, or you can't help, call request_human_handoff.\n- Get the caller's first name and phone number early — you need them for lookups, booking, and any follow-up.\n- Never read raw tool output aloud. Always turn it into a natural spoken sentence.\n\nTools available to you:\n- lookup_patient — call once you have the caller's phone (or email) to check if they're an existing patient. Use the result to personalize the conversation (e.g. greet returning patients by name).\n- check_availability — call before offering to book a specific time, to confirm the slot is open.\n- book_appointment — call once you have name, phone, service, and a specific date and time the caller wants. It will check availability itself and tell you if it succeeded.\n- cancel_or_reschedule_appointment — call when the caller wants to cancel or move an existing appointment. Some requests will come back needing staff to handle it directly (you'll be told) — if so, tell the caller the team will confirm; do not say it's done. Otherwise the tool has already made the change — confirm it happened.\n- log_emergency — call immediately for any dental emergency.\n- request_human_handoff — call when the caller wants a person, or you can't help.\n- faq_lookup — use only if a general clinic question (hours, location, pricing, insurance, services, policies) isn't already covered by your knowledge base.\n\nWhile a tool is running, briefly acknowledge the caller (e.g. \"one moment while I check that\") so there's no awkward silence."
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "async": false,
+        "messages": [{ "type": "request-start", "content": "One moment while I look that up." }],
+        "function": {
+          "name": "lookup_patient",
+          "description": "Check whether the caller is an existing patient by phone or email. Call this as soon as you have either.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "phone": { "type": "string", "description": "Caller's phone number, digits as spoken" },
+              "email": { "type": "string", "description": "Caller's email if given" },
+              "first_name": { "type": "string" },
+              "last_name": { "type": "string" }
+            },
+            "required": []
+          }
+        }
+      },
+      {
+        "type": "function",
+        "async": false,
+        "messages": [{ "type": "request-start", "content": "Let me check that time for you." }],
+        "function": {
+          "name": "check_availability",
+          "description": "Check whether a specific appointment start time is free on the clinic calendar, before offering to book it.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "start_iso": { "type": "string", "description": "Proposed appointment start time as full ISO-8601 datetime" },
+              "duration_min": { "type": "number", "description": "Appointment length in minutes; omit to use the clinic default" }
+            },
+            "required": ["start_iso"]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "async": false,
+        "messages": [{ "type": "request-start", "content": "Let me get that tentatively held for you." }],
+        "function": {
+          "name": "book_appointment",
+          "description": "Tentatively book an appointment. Only call once you have the caller's name, phone, requested service, and a specific date and time. It checks availability internally.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "first_name": { "type": "string" },
+              "last_name": { "type": "string" },
+              "phone": { "type": "string" },
+              "email": { "type": "string" },
+              "service": { "type": "string", "description": "Requested service, e.g. cleaning, filling, Invisalign consult" },
+              "start_iso": { "type": "string", "description": "Requested appointment start time as full ISO-8601 datetime" },
+              "duration_min": { "type": "number" },
+              "patient_type": { "type": "string", "enum": ["new", "existing"] }
+            },
+            "required": ["first_name", "phone", "service", "start_iso"]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "async": false,
+        "messages": [{ "type": "request-start", "content": "Give me one second to pull that up." }],
+        "function": {
+          "name": "cancel_or_reschedule_appointment",
+          "description": "Cancel or reschedule the caller's existing appointment. Changes within the clinic's short-notice window are automatically routed to staff instead of being made immediately — you'll be told which happened.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "first_name": { "type": "string" },
+              "last_name": { "type": "string" },
+              "phone": { "type": "string" },
+              "email": { "type": "string" },
+              "action": { "type": "string", "enum": ["cancel", "reschedule"] },
+              "new_start_iso": { "type": "string", "description": "Only for reschedule: the new requested start time as full ISO-8601 datetime" },
+              "reason": { "type": "string" }
+            },
+            "required": ["phone", "action"]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "async": false,
+        "function": {
+          "name": "log_emergency",
+          "description": "Log a dental emergency for urgent staff follow-up. Call this immediately whenever the caller describes an emergency symptom.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "first_name": { "type": "string" },
+              "phone": { "type": "string" },
+              "issue_summary": { "type": "string", "description": "Brief neutral summary of what the caller described, no diagnosis" },
+              "severity": { "type": "string" }
+            },
+            "required": ["issue_summary"]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "async": false,
+        "function": {
+          "name": "request_human_handoff",
+          "description": "Escalate to clinic staff for direct follow-up, e.g. when the caller asks for a person or you can't help.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "first_name": { "type": "string" },
+              "phone": { "type": "string" },
+              "email": { "type": "string" },
+              "reason": { "type": "string" }
+            },
+            "required": ["reason"]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "async": false,
+        "messages": [{ "type": "request-start", "content": "Good question, let me check." }],
+        "function": {
+          "name": "faq_lookup",
+          "description": "Look up a general clinic question (hours, location, pricing, insurance, services, policies) that isn't already covered by your built-in knowledge base. Prefer answering from your own knowledge first.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "question": { "type": "string" }
+            },
+            "required": ["question"]
+          }
+        }
+      }
+    ]
+  },
+  "voice": {
+    "provider": "11labs",
+    "voiceId": "REPLACE_ME_VOICE_ID",
+    "model": "eleven_turbo_v2_5",
+    "_comment": "Use a Turbo/streaming-optimized voice model so speech starts before the full sentence is generated. Cartesia Sonic or Deepgram Aura are comparable fast alternatives."
+  },
+  "knowledgeBase": {
+    "_comment": "RECOMMENDED for lowest FAQ latency: upload the same docs from ../seed-knowledge-base/ here via Vapi's native Knowledge Base / File Search feature instead of relying on the faq_lookup tool. This avoids an extra webhook + vector DB round trip per question. Configure via the Vapi dashboard or Files/KnowledgeBase API; exact field name depends on current Vapi API version.",
+    "provider": "REPLACE_ME_IF_USED"
+  }
+}

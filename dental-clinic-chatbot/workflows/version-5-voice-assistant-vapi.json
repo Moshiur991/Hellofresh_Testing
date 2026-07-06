@@ -1,0 +1,2557 @@
+{
+  "name": "Version 5 Voice Dental Assistant (Vapi)",
+  "nodes": [
+    {
+      "id": "note_main",
+      "name": "README",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1600,
+        -900
+      ],
+      "parameters": {
+        "width": 1000,
+        "height": 640,
+        "color": 4,
+        "content": "## Version 5 Voice Dental Assistant (Vapi + Twilio)\nThis workflow is a TOOL BACKEND, not the conversation itself. The live phone call is handled entirely by a Vapi Assistant (see ../vapi/assistant-config.json + ../VAPI-VOICE-SETUP.md) \u2014 Vapi does STT/LLM/TTS and calls this workflow's webhook only for side effects that need real data (booking, lookup, calendar, logging).\n\n### Flow\nWebhook (POST, one URL for everything Vapi sends) \u2192 Parse Vapi Message \u2192 Load Clinic Config \u2192 Message Type? (tool-calls / end-of-call-report / other)\n  \u2022 tool-calls \u2192 Expand Tool Calls \u2192 Route Tool (Switch on function name) \u2192 7 tool branches, each: FAST path computes the result Vapi needs to keep talking \u2192 Collect Tool Results \u2192 Respond (one JSON response covering ALL tool calls in the message). A SLOW/async path (Sheets/Gmail/Twilio) branches off the same compute step and runs AFTER the response is already sent \u2014 it never blocks the live call.\n  \u2022 end-of-call-report \u2192 log the full call to Conversations + update Patient_Records, then ack.\n  \u2022 anything else \u2192 ack with {} (Vapi sends other message types too \u2014 must always get a fast 200).\n\n### The 7 tools\nlookup_patient, check_availability, book_appointment, cancel_or_reschedule_appointment, log_emergency, request_human_handoff, faq_lookup (optional \u2014 prefer Vapi's native Knowledge Base for lower latency; keep this as fallback).\n\n### Credentials to set after import\nGoogle Sheets \u2192 all Sheets nodes. Gmail \u2192 all Gmail nodes. Twilio \u2192 SMS nodes (gated off by default). Google Calendar \u2192 the 5 calendar nodes (calendar = moshiurrahman.rupu@gmail.com, set in Load Clinic Config). OpenAI + Pinecone \u2192 ONLY needed for the optional faq_lookup tool (embeddings, no chat model \u2014 the conversational model lives in Vapi and is billed/configured there separately).\n\n### Webhook\nPath: /webhook/vapi-dental-assistant (POST). Response Mode = 'Using Respond to Webhook Node' \u2014 required so the fast/slow split works. Point Vapi's Server URL at this webhook's production URL.\n\n### Read this before going live\nSee VAPI-VOICE-SETUP.md \u00a72 for the full latency checklist (model/voice/transcriber choice, Vapi native KB, tool filler messages, why nothing here calls an LLM in the hot path)."
+      }
+    },
+    {
+      "id": "webhook",
+      "name": "Vapi Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1600,
+        140
+      ],
+      "webhookId": "vapi-dental-assistant",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "vapi-dental-assistant",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "parse",
+      "name": "Parse Vapi Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1360,
+        140
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const body = $input.first().json.body ?? $input.first().json;\nconst msg = body.message || body;\nconst type = msg.type || 'unknown';\nlet toolCalls = [];\nif (type === 'tool-calls') {\n  const raw = msg.toolCallList || msg.toolCalls || [];\n  toolCalls = raw.map(tc => {\n    const fn = tc.function || tc;\n    let args = fn.arguments;\n    if (typeof args === 'string') { try { args = JSON.parse(args); } catch (e) { args = {}; } }\n    return { toolCallId: tc.id || tc.toolCallId, name: fn.name, args: args || {} };\n  });\n}\nreturn [{ json: { messageType: type, toolCalls, raw: msg } }];"
+      }
+    },
+    {
+      "id": "cfg",
+      "name": "Load Clinic Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1120,
+        140
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "c1",
+              "name": "clinic_id",
+              "value": "smilecare",
+              "type": "string"
+            },
+            {
+              "id": "c2",
+              "name": "clinic_name",
+              "value": "{{clinic_name}}",
+              "type": "string"
+            },
+            {
+              "id": "c3",
+              "name": "staff_email",
+              "value": "{{staff_email}}",
+              "type": "string"
+            },
+            {
+              "id": "c4",
+              "name": "staff_phone",
+              "value": "{{staff_phone}}",
+              "type": "string"
+            },
+            {
+              "id": "c5",
+              "name": "twilio_from",
+              "value": "{{TWILIO_PHONE_NUMBER}}",
+              "type": "string"
+            },
+            {
+              "id": "c6",
+              "name": "sheet_id",
+              "value": "{{GOOGLE_SHEET_ID}}",
+              "type": "string"
+            },
+            {
+              "id": "c7",
+              "name": "pinecone_index",
+              "value": "dental-clinic-kb",
+              "type": "string"
+            },
+            {
+              "id": "c8",
+              "name": "pinecone_namespace",
+              "value": "smilecare_knowledge_base",
+              "type": "string"
+            },
+            {
+              "id": "c9",
+              "name": "pinecone_min_score",
+              "value": 0.78,
+              "type": "number"
+            },
+            {
+              "id": "c10",
+              "name": "clinic_calendar",
+              "value": "moshiurrahman.rupu@gmail.com",
+              "type": "string"
+            },
+            {
+              "id": "c11",
+              "name": "appointment_duration_min",
+              "value": 60,
+              "type": "number"
+            },
+            {
+              "id": "c12",
+              "name": "change_cutoff_hours",
+              "value": 48,
+              "type": "number"
+            },
+            {
+              "id": "c13",
+              "name": "sms_enabled_patient",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "c14",
+              "name": "sms_enabled_staff",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "c15",
+              "name": "test_mode",
+              "value": true,
+              "type": "boolean"
+            }
+          ]
+        },
+        "include": "all",
+        "options": {}
+      }
+    },
+    {
+      "id": "msgtype",
+      "name": "Message Type?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -880,
+        140
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.messageType }}",
+                    "rightValue": "tool-calls",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "ToolCalls"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.messageType }}",
+                    "rightValue": "end-of-call-report",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "EndOfCall"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      }
+    },
+    {
+      "id": "otherack",
+      "name": "Other Ack",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -620,
+        420
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{ json: {} }];"
+      }
+    },
+    {
+      "id": "respOther",
+      "name": "Respond Other",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        -380,
+        420
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}"
+      }
+    },
+    {
+      "id": "eocextract",
+      "name": "EOC_Extract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -620,
+        620
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const cfg = $('Load Clinic Config').first().json;\nconst msg = $('Parse Vapi Message').first().json.raw;\nconst call = msg.call || {};\nconst customerPhone = (call.customer && call.customer.number) || (msg.customer && msg.customer.number) || '';\nconst summary = msg.summary || (msg.analysis && msg.analysis.summary) || '';\nconst transcript = msg.transcript || '';\nconst endedReason = msg.endedReason || '';\nreturn [{ json: { sheet_id: cfg.sheet_id, test_mode: cfg.test_mode, timestamp: $now.toISO(), session_id: call.id || '', phone: customerPhone, summary, transcript, endedReason } }];"
+      }
+    },
+    {
+      "id": "respEoc",
+      "name": "Respond EndOfCall",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        -380,
+        560
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {} }}"
+      }
+    },
+    {
+      "id": "eocconvrow",
+      "name": "EOC_BuildConvRow",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -380,
+        700
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const d = $json;\nreturn [{ json: { sheet_id: d.sheet_id, timestamp: d.timestamp, session_id: d.session_id, user_message: (d.transcript || '').slice(0, 4000), bot_response: d.summary, intent: 'voice_call', confidence: '', urgency: '', patient_name: '', phone: d.phone, email: '', status: 'Logged', notes: (d.test_mode ? '[TEST] ' : '') + 'Call ended: ' + d.endedReason } }];"
+      }
+    },
+    {
+      "id": "eoclog",
+      "name": "EOC_LogConversation",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -140,
+        700
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Conversations"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "eocptrow",
+      "name": "EOC_BuildPatientUpdate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -380,
+        840
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const d = $json; const patient_key = (d.phone || '').replace(/\\D/g, '');\nif (!patient_key) return [];\nreturn [{ json: { sheet_id: d.sheet_id, patient_key, last_interaction: d.timestamp, last_conversation_summary: (d.test_mode ? '[TEST] ' : '') + (d.summary || 'Phone call'), status: 'Active' } }];"
+      }
+    },
+    {
+      "id": "eocptupsert",
+      "name": "EOC_UpdatePatientRecord",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -140,
+        840
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Patient_Records"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [
+            "patient_key"
+          ],
+          "value": {}
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "expand",
+      "name": "Expand Tool Calls",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -620,
+        140
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const cfg = $('Load Clinic Config').first().json;\nconst clinic = { clinic_name: cfg.clinic_name, staff_email: cfg.staff_email, staff_phone: cfg.staff_phone, twilio_from: cfg.twilio_from, sheet_id: cfg.sheet_id, pinecone_index: cfg.pinecone_index, pinecone_namespace: cfg.pinecone_namespace, pinecone_min_score: cfg.pinecone_min_score, clinic_calendar: cfg.clinic_calendar, appointment_duration_min: cfg.appointment_duration_min, change_cutoff_hours: cfg.change_cutoff_hours, sms_enabled_patient: cfg.sms_enabled_patient, sms_enabled_staff: cfg.sms_enabled_staff, test_mode: cfg.test_mode };\nconst parsed = $('Parse Vapi Message').first().json;\nreturn parsed.toolCalls.map(tc => ({ json: { toolCallId: tc.toolCallId, name: tc.name, args: tc.args, clinic } }));"
+      }
+    },
+    {
+      "id": "route",
+      "name": "Route Tool",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -380,
+        140
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.name }}",
+                    "rightValue": "lookup_patient",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "lookup_patient"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.name }}",
+                    "rightValue": "check_availability",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "check_availability"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.name }}",
+                    "rightValue": "book_appointment",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "book_appointment"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.name }}",
+                    "rightValue": "cancel_or_reschedule_appointment",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "cancel_or_reschedule_appointment"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.name }}",
+                    "rightValue": "log_emergency",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "log_emergency"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.name }}",
+                    "rightValue": "request_human_handoff",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "request_human_handoff"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.name }}",
+                    "rightValue": "faq_lookup",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "faq_lookup"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      }
+    },
+    {
+      "id": "collect",
+      "name": "Collect Tool Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        140
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const results = $input.all().map(i => ({ toolCallId: i.json.toolCallId, result: typeof i.json.result === 'string' ? i.json.result : JSON.stringify(i.json.result) }));\nreturn [{ json: { results } }];"
+      }
+    },
+    {
+      "id": "respTools",
+      "name": "Respond ToolCalls",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1940,
+        140
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}"
+      }
+    },
+    {
+      "id": "note_pattern",
+      "name": "Fast path vs slow path",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -380,
+        -220
+      ],
+      "parameters": {
+        "width": 640,
+        "height": 260,
+        "color": 6,
+        "content": "Each tool branch below has a FAST chain (feeds \u2192 Collect Tool Results \u2192 Respond) that computes only what the spoken reply needs, and \u2014 where there's a side effect \u2014 a SLOW chain (Sheets/Gmail/Twilio) branching off the same point, which runs in parallel and does NOT feed the response. n8n sends the HTTP response as soon as the fast chain reaches Respond ToolCalls, regardless of whether the slow chain has finished \u2014 the live call is never blocked on logging or notifications."
+      }
+    },
+    {
+      "id": "LP_Read",
+      "name": "LP_Read",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -140,
+        -140
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.clinic.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Patient_Records"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "LP_Match",
+      "name": "LP_Match",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        100,
+        -140
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const orig = $('Route Tool').item.json;\nconst args = orig.args; const clinic = orig.clinic;\nconst phone = (args.phone || '').replace(/\\D/g, ''); const email = (args.email || '').trim().toLowerCase();\nconst rows = $input.all().map(i => i.json).filter(r => r && (r.patient_key || r.phone || r.email));\nlet match = null;\nif (phone && phone.length >= 7) { match = rows.find(r => String(r.phone || '').replace(/\\D/g, '') === phone); }\nif (!match && email) { match = rows.find(r => String(r.email || '').trim().toLowerCase() === email); }\nconst found = !!match;\nconst patient_type = found ? 'Existing' : 'New';\nconst first_name = found ? match.first_name : (args.first_name || '');\nconst last_name = found ? match.last_name : (args.last_name || '');\nconst patient_key = phone || email || '';\nconst created_at = (match && match.created_at) || $now.toISO();\nconst record = { sheet_id: clinic.sheet_id, patient_key, created_at, last_interaction: $now.toISO(), first_name: first_name || args.first_name || '', last_name: last_name || args.last_name || '', email: args.email || (match ? match.email : '') || '', phone: args.phone || (match ? match.phone : '') || '', service_required: args.service || (match ? match.service_required : '') || '', patient_type, last_conversation_summary: (clinic.test_mode ? '[TEST] ' : '') + 'Phone call check-in', status: 'Active', notes: '' };\nreturn [{ json: { toolCallId: orig.toolCallId, found, patient_type, first_name, last_name, patient_key, clinic, _record: record } }];"
+      }
+    },
+    {
+      "id": "LP_Format",
+      "name": "LP_Format",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        340,
+        -220
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: { toolCallId: $json.toolCallId, result: { found: $json.found, patient_type: $json.patient_type, first_name: $json.first_name, last_name: $json.last_name } } };"
+      }
+    },
+    {
+      "id": "LP_ShapeRecord",
+      "name": "LP_ShapeRecord",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        340,
+        -60
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: $json._record };"
+      }
+    },
+    {
+      "id": "LP_Upsert",
+      "name": "LP_Upsert",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        580,
+        -60
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Patient_Records"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [
+            "patient_key"
+          ],
+          "value": {}
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "CA_FreeBusy",
+      "name": "CA_FreeBusy",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        -140,
+        20
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "event",
+        "operation": "getAll",
+        "calendar": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Route Tool').item.json.clinic.clinic_calendar }}"
+        },
+        "returnAll": true,
+        "options": {
+          "timeMin": "={{ $('Route Tool').item.json.args.start_iso }}",
+          "timeMax": "={{ DateTime.fromISO($('Route Tool').item.json.args.start_iso).plus({minutes: $('Route Tool').item.json.args.duration_min || $('Route Tool').item.json.clinic.appointment_duration_min}).toISO() }}"
+        }
+      },
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_ME_GCAL_CRED_ID",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "id": "CA_Compute",
+      "name": "CA_Compute",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        100,
+        20
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const orig = $('Route Tool').item.json;\nconst events = $input.all().map(i => i.json).filter(e => e && (e.id || e.start));\nconst available = events.length === 0;\nreturn [{ json: { toolCallId: orig.toolCallId, result: { available } } }];"
+      }
+    },
+    {
+      "id": "BA_FreeBusy",
+      "name": "BA_FreeBusy",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        -140,
+        180
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "event",
+        "operation": "getAll",
+        "calendar": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Route Tool').item.json.clinic.clinic_calendar }}"
+        },
+        "returnAll": true,
+        "options": {
+          "timeMin": "={{ $('Route Tool').item.json.args.start_iso }}",
+          "timeMax": "={{ DateTime.fromISO($('Route Tool').item.json.args.start_iso).plus({minutes: $('Route Tool').item.json.args.duration_min || $('Route Tool').item.json.clinic.appointment_duration_min}).toISO() }}"
+        }
+      },
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_ME_GCAL_CRED_ID",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "id": "BA_Decide",
+      "name": "BA_Decide",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        100,
+        180
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const orig = $('Route Tool').item.json; const args = orig.args; const clinic = orig.clinic;\nconst dur = args.duration_min || clinic.appointment_duration_min || 60;\nconst start = args.start_iso; const end = DateTime.fromISO(start).plus({ minutes: dur }).toISO();\nconst events = $input.all().map(i => i.json).filter(e => e && (e.id || e.start));\nconst free = events.length === 0;\nconst name = `${args.first_name || ''} ${args.last_name || ''}`.trim();\nreturn [{ json: { toolCallId: orig.toolCallId, args, clinic, free, start, end, summary: `(TENTATIVE) Dental appt - ${name}`, description: `Tentative booking via voice assistant. Service: ${args.service || '-'}. Phone: ${args.phone || '-'}. Email: ${args.email || '-'}. NOT staff-confirmed.` } }];"
+      }
+    },
+    {
+      "id": "BA_Free?",
+      "name": "BA_Free?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        340,
+        180
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.free }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "BA_Create",
+      "name": "BA_Create Event",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        580,
+        80
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "event",
+        "operation": "create",
+        "calendar": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.clinic.clinic_calendar }}"
+        },
+        "start": "={{ $json.start }}",
+        "end": "={{ $json.end }}",
+        "additionalFields": {
+          "summary": "={{ $json.summary }}",
+          "description": "={{ $json.description }}"
+        }
+      },
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_ME_GCAL_CRED_ID",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "id": "BA_SuccessFormat",
+      "name": "BA_SuccessFormat",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        820,
+        80
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const d = $('BA_Decide').item.json;\nconst when = DateTime.fromISO(d.start).toFormat('cccc, LLL d, t');\nreturn [{ json: { toolCallId: d.toolCallId, result: { booked: true, tentative: true, message: `Tentatively held ${when}. Our team will confirm it shortly.` } } }];"
+      }
+    },
+    {
+      "id": "BA_UnavailFormat",
+      "name": "BA_UnavailFormat",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        580,
+        280
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const d = $json;\nconst when = DateTime.fromISO(d.start).toFormat('cccc, LLL d, t');\nreturn [{ json: { toolCallId: d.toolCallId, result: { booked: false, tentative: false, message: `${when} isn't available. Could you share another date and time?` } } }];"
+      }
+    },
+    {
+      "id": "BA_RowShape",
+      "name": "BA_RowShape",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        820,
+        280
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const d = $('BA_Decide').item.json; const a = d.args; const day = $now.format('yyyy-LL-dd');\nreturn [{ json: { sheet_id: d.clinic.sheet_id, lead_key: `${d.clinic.clinic_id||'clinic'}|${a.phone||'nophone'}|appointment|${day}`, created_at: $now.toISO(), session_id: '', patient_name: `${a.first_name||''} ${a.last_name||''}`.trim(), phone: a.phone, email: a.email||'', patient_type: a.patient_type||'', requested_service: a.service, preferred_date: a.start_iso, preferred_time: '', urgency: 'medium', status: 'New', conversation_summary: (d.clinic.test_mode?'[TEST] ':'') + 'Booked via voice assistant (tentative)', staff_notified: true, sms_sent: false, last_updated: $now.toISO() } }];"
+      }
+    },
+    {
+      "id": "BA_Upsert",
+      "name": "BA_Upsert",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1060,
+        280
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Appointment_Requests"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [
+            "lead_key"
+          ],
+          "value": {}
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "BA_NotifyStaff",
+      "name": "BA_NotifyStaff",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1300,
+        280
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $('BA_Decide').item.json.clinic.staff_email }}",
+        "subject": "={{ '[' + $('BA_Decide').item.json.clinic.clinic_name + '] Tentative booking (voice) - ' + $('BA_Decide').item.json.args.first_name }}",
+        "emailType": "text",
+        "message": "={{ 'A tentative appointment was booked via the voice assistant.\\n\\nPatient: ' + $('BA_Decide').item.json.args.first_name + ' ' + $('BA_Decide').item.json.args.last_name + '\\nPhone: ' + $('BA_Decide').item.json.args.phone + '\\nEmail: ' + ($('BA_Decide').item.json.args.email||'-') + '\\nService: ' + ($('BA_Decide').item.json.args.service||'-') + '\\nRequested time: ' + $('BA_Decide').item.json.start + '\\n\\nPlease confirm or adjust in the calendar.' }}",
+        "options": {
+          "replyTo": "''"
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_ME_GMAIL_CRED_ID",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "id": "BA_SMS?",
+      "name": "BA_SMS?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1540,
+        280
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $('BA_Decide').item.json.clinic.sms_enabled_patient }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "BA_Twilio",
+      "name": "BA_Twilio",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        1780,
+        220
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "sms",
+        "operation": "send",
+        "from": "={{ $('BA_Decide').item.json.clinic.twilio_from }}",
+        "to": "={{ $('BA_Decide').item.json.args.phone }}",
+        "message": "={{ 'Hi ' + $('BA_Decide').item.json.args.first_name + ', thanks for calling ' + $('BA_Decide').item.json.clinic.clinic_name + '. We tentatively held your appointment request; our team will confirm shortly.' }}",
+        "options": {}
+      },
+      "credentials": {
+        "twilioApi": {
+          "id": "REPLACE_ME_TWILIO_CRED_ID",
+          "name": "Twilio account"
+        }
+      }
+    },
+    {
+      "id": "CR_FindEvent",
+      "name": "CR_FindEvent",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        -140,
+        420
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "event",
+        "operation": "getAll",
+        "calendar": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Route Tool').item.json.clinic.clinic_calendar }}"
+        },
+        "returnAll": true,
+        "options": {
+          "timeMin": "={{ $now.toISO() }}",
+          "timeMax": "={{ $now.plus({days: 60}).toISO() }}"
+        }
+      },
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_ME_GCAL_CRED_ID",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "id": "CR_Compute",
+      "name": "CR_Compute",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        100,
+        420
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const orig = $('Route Tool').item.json; const args = orig.args; const clinic = orig.clinic;\nconst email = (args.email || '').toLowerCase(); const phone = (args.phone || '').replace(/\\D/g, '');\nconst events = $input.all().map(i => i.json);\nlet match = null;\nfor (const e of events) { const att = JSON.stringify(e.attendees || '').toLowerCase(); const blob = `${e.summary||''} ${e.description||''}`.toLowerCase();\n  if (email && (att.includes(email) || blob.includes(email))) { match = e; break; }\n  if (phone && blob.replace(/\\D/g,'').includes(phone)) { match = e; break; } }\nconst cutoff = clinic.change_cutoff_hours || 48;\nlet found = !!match, within = false, eventId = '', startIso = '';\nif (match) { startIso = (match.start && (match.start.dateTime || match.start.date)) || match.start || ''; eventId = match.id || '';\n  try { const hrs = DateTime.fromISO(startIso).diff($now, 'hours').hours; within = hrs < cutoff; } catch (e) { within = true; } }\nconst action = args.action === 'reschedule' ? 'reschedule' : 'cancel';\nconst newStart = args.new_start_iso || '';\nconst dur = clinic.appointment_duration_min || 60;\nconst newEnd = newStart ? DateTime.fromISO(newStart).plus({ minutes: dur }).toISO() : '';\nconst needsStaff = within || !found || (action === 'reschedule' && !newStart);\nreturn [{ json: { toolCallId: orig.toolCallId, args, clinic, found, within, needsStaff, eventId, startIso, action, newStart, newEnd } }];"
+      }
+    },
+    {
+      "id": "CR_NeedsStaff?",
+      "name": "CR_NeedsStaff?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        340,
+        420
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.needsStaff }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "CR_EscFormat",
+      "name": "CR_EscFormat",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        580,
+        320
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const d = $json;\nconst cutoffTxt = d.clinic.change_cutoff_hours;\nconst reason = d.within ? `within our ${cutoffTxt}-hour change window` : (!d.found ? \"we couldn't locate the appointment automatically\" : 'no new time was given for the reschedule');\nreturn [{ json: { toolCallId: d.toolCallId, result: { needs_staff: true, message: `Because that's ${reason}, our team will handle this directly and confirm with you shortly.` } } }];"
+      }
+    },
+    {
+      "id": "CR_EscRowShape",
+      "name": "CR_EscRowShape",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        820,
+        260
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const d = $json; const day = $now.format('yyyy-LL-dd');\nreturn [{ json: { sheet_id: d.clinic.sheet_id, lead_key: `${d.clinic.clinic_id||'clinic'}|${d.args.phone||d.args.email||'nocontact'}|${d.action}_staff|${day}`, timestamp: $now.toISO(), session_id: '', patient_name: `${d.args.first_name||''} ${d.args.last_name||''}`.trim(), phone: d.args.phone||'', email: d.args.email||'', issue_type: d.action + '_needs_staff', urgency: d.within ? 'high' : 'medium', summary: (d.clinic.test_mode?'[TEST] ':'') + (d.action + ' request via voice - needs staff'), staff_notified: true, sms_sent: false, status: 'New', notes: d.startIso ? ('Existing appt: ' + d.startIso) : '' } }];"
+      }
+    },
+    {
+      "id": "CR_EscSheets",
+      "name": "CR_EscSheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1060,
+        260
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Escalations"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "CR_EscEmail",
+      "name": "CR_EscEmail",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1300,
+        260
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $('CR_Compute').item.json.clinic.staff_email }}",
+        "subject": "={{ '[' + $('CR_Compute').item.json.clinic.clinic_name + '] STAFF ACTION - ' + $('CR_Compute').item.json.action + ' (voice call)' }}",
+        "emailType": "text",
+        "message": "={{ 'A ' + $('CR_Compute').item.json.action + ' request from a phone call needs staff handling.\\n\\nPatient: ' + $('CR_Compute').item.json.args.first_name + ' ' + $('CR_Compute').item.json.args.last_name + '\\nPhone: ' + ($('CR_Compute').item.json.args.phone||'-') + '\\nEmail: ' + ($('CR_Compute').item.json.args.email||'-') + '\\nExisting appointment: ' + ($('CR_Compute').item.json.startIso||'not found') + '\\nRequested new time: ' + ($('CR_Compute').item.json.newStart||'-') + '\\n\\nPlease action in the calendar and contact the patient.' }}",
+        "options": {
+          "replyTo": "''"
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_ME_GMAIL_CRED_ID",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "id": "CR_Action?",
+      "name": "CR_Action?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        580,
+        520
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "cancel",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "CR_Delete",
+      "name": "CR_Delete Event",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        820,
+        460
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "event",
+        "operation": "delete",
+        "calendar": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.clinic.clinic_calendar }}"
+        },
+        "eventId": "={{ $json.eventId }}",
+        "options": {}
+      },
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_ME_GCAL_CRED_ID",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "id": "CR_CancelFormat",
+      "name": "CR_CancelFormat",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        460
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const d = $('CR_Compute').item.json;\nconst when = d.startIso ? DateTime.fromISO(d.startIso).toFormat('cccc, LLL d, t') : 'your appointment';\nreturn [{ json: { toolCallId: d.toolCallId, result: { needs_staff: false, message: `Done - I've cancelled ${when}. Let us know if you need anything else.` } } }];"
+      }
+    },
+    {
+      "id": "CR_Update",
+      "name": "CR_Update Event",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        820,
+        600
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "event",
+        "operation": "update",
+        "calendar": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.clinic.clinic_calendar }}"
+        },
+        "eventId": "={{ $json.eventId }}",
+        "updateFields": {
+          "start": "={{ $json.newStart }}",
+          "end": "={{ $json.newEnd }}"
+        }
+      },
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_ME_GCAL_CRED_ID",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "id": "CR_ReschedFormat",
+      "name": "CR_ReschedFormat",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        600
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const d = $('CR_Compute').item.json;\nconst when = d.newStart ? DateTime.fromISO(d.newStart).toFormat('cccc, LLL d, t') : 'the new time';\nreturn [{ json: { toolCallId: d.toolCallId, result: { needs_staff: false, message: `Done - I've moved your appointment to ${when} (tentatively). Our team will confirm.` } } }];"
+      }
+    },
+    {
+      "id": "CR_LogRowShape",
+      "name": "CR_LogRowShape",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        540
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const d = $('CR_Compute').item.json;\nreturn [{ json: { sheet_id: d.clinic.sheet_id, created_at: $now.toISO(), session_id: '', patient_name: `${d.args.first_name||''} ${d.args.last_name||''}`.trim(), phone: d.args.phone||'', email: d.args.email||'', request_type: d.action, existing_appt_datetime: d.startIso, new_preferred_datetime: d.newStart, reason: d.args.reason||'', status: 'Done', staff_notified: false, sms_sent: false, notes: (d.clinic.test_mode?'[TEST] ':'') + 'Handled directly via voice assistant' } }];"
+      }
+    },
+    {
+      "id": "CR_LogSheets",
+      "name": "CR_LogSheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1540,
+        540
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Cancellations_Reschedules"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "EM_Compute",
+      "name": "EM_Compute",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -140,
+        700
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const orig = $('Route Tool').item.json; const args = orig.args; const clinic = orig.clinic;\nconst blob = (args.issue_summary || '').toLowerCase();\nconst redFlags = ['swelling','swollen','breath','breathing','uncontrolled','fever','faint','injury','accident','knocked out'];\nconst hasRedFlag = redFlags.some(k => blob.includes(k));\nlet message = \"I'm sorry you're dealing with that. I've flagged this to our clinic team right away so someone can follow up quickly.\";\nif (hasRedFlag) { message += ' If you have severe swelling, trouble breathing, uncontrolled bleeding, a high fever, or a serious injury, please seek urgent or emergency medical care immediately.'; }\nreturn [{ json: { toolCallId: orig.toolCallId, args, clinic, message, hasRedFlag } }];"
+      }
+    },
+    {
+      "id": "EM_Format",
+      "name": "EM_Format",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        100,
+        660
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: { toolCallId: $json.toolCallId, result: { logged: true, message: $json.message } } };"
+      }
+    },
+    {
+      "id": "EM_RowShape",
+      "name": "EM_RowShape",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        100,
+        780
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const d = $json; const day = $now.format('yyyy-LL-dd');\nreturn [{ json: { sheet_id: d.clinic.sheet_id, lead_key: `${d.clinic.clinic_id||'clinic'}|${d.args.phone||'nophone'}|emergency|${day}`, timestamp: $now.toISO(), session_id: '', patient_name: d.args.first_name||'', phone: d.args.phone||'', email: '', issue_type: 'emergency', urgency: 'high', summary: (d.clinic.test_mode?'[TEST] ':'') + ('Voice call emergency: ' + (d.args.issue_summary||'')), staff_notified: true, sms_sent: false, status: 'New', notes: d.args.severity ? ('Severity: ' + d.args.severity) : '' } }];"
+      }
+    },
+    {
+      "id": "EM_Upsert",
+      "name": "EM_Upsert",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        340,
+        780
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Escalations"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [
+            "lead_key"
+          ],
+          "value": {}
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "EM_Email",
+      "name": "EM_Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        580,
+        780
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $('EM_Compute').item.json.clinic.staff_email }}",
+        "subject": "={{ 'EMERGENCY - [' + $('EM_Compute').item.json.clinic.clinic_name + '] - ' + ($('EM_Compute').item.json.args.first_name||'unknown caller') }}",
+        "emailType": "text",
+        "message": "={{ 'EMERGENCY - REVIEW NOW\\n\\nCaller: ' + ($('EM_Compute').item.json.args.first_name||'-') + '\\nPhone: ' + ($('EM_Compute').item.json.args.phone||'-') + '\\nReported issue: ' + ($('EM_Compute').item.json.args.issue_summary||'-') + '\\nRed-flag keywords: ' + ($('EM_Compute').item.json.hasRedFlag ? 'YES' : 'no') + '\\n\\nThis came in via the voice assistant. Contact the patient as a priority.' }}",
+        "options": {
+          "replyTo": "''"
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_ME_GMAIL_CRED_ID",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "id": "EM_SMS?",
+      "name": "EM_SMS?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        820,
+        780
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $('EM_Compute').item.json.clinic.sms_enabled_staff }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "EM_Twilio",
+      "name": "EM_Twilio",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        1060,
+        720
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "sms",
+        "operation": "send",
+        "from": "={{ $('EM_Compute').item.json.clinic.twilio_from }}",
+        "to": "={{ $('EM_Compute').item.json.clinic.staff_phone }}",
+        "message": "={{ 'URGENT dental (voice): ' + ($('EM_Compute').item.json.args.first_name||'unknown') + ' ' + ($('EM_Compute').item.json.args.phone||'no #') + '. ' + ($('EM_Compute').item.json.args.issue_summary||'').slice(0,90) + '. Review now.' }}",
+        "options": {}
+      },
+      "credentials": {
+        "twilioApi": {
+          "id": "REPLACE_ME_TWILIO_CRED_ID",
+          "name": "Twilio account"
+        }
+      }
+    },
+    {
+      "id": "HH_Compute",
+      "name": "HH_Compute",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -140,
+        980
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const orig = $('Route Tool').item.json;\nreturn [{ json: { toolCallId: orig.toolCallId, args: orig.args, clinic: orig.clinic, message: \"I've let our team know - someone will follow up with you soon.\" } }];"
+      }
+    },
+    {
+      "id": "HH_Format",
+      "name": "HH_Format",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        100,
+        940
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: { toolCallId: $json.toolCallId, result: { logged: true, message: $json.message } } };"
+      }
+    },
+    {
+      "id": "HH_RowShape",
+      "name": "HH_RowShape",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        100,
+        1060
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const d = $json; const day = $now.format('yyyy-LL-dd');\nreturn [{ json: { sheet_id: d.clinic.sheet_id, lead_key: `${d.clinic.clinic_id||'clinic'}|${d.args.phone||d.args.email||'nocontact'}|handoff|${day}`, timestamp: $now.toISO(), session_id: '', patient_name: d.args.first_name||'', phone: d.args.phone||'', email: d.args.email||'', issue_type: 'human_handoff', urgency: 'medium', summary: (d.clinic.test_mode?'[TEST] ':'') + ('Voice call handoff: ' + (d.args.reason||'')), staff_notified: true, sms_sent: false, status: 'New', notes: '' } }];"
+      }
+    },
+    {
+      "id": "HH_Upsert",
+      "name": "HH_Upsert",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        340,
+        1060
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Escalations"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [
+            "lead_key"
+          ],
+          "value": {}
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "HH_Email",
+      "name": "HH_Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        580,
+        1060
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $('HH_Compute').item.json.clinic.staff_email }}",
+        "subject": "={{ '[' + $('HH_Compute').item.json.clinic.clinic_name + '] Human handoff (voice call) - ' + ($('HH_Compute').item.json.args.first_name||'caller') }}",
+        "emailType": "text",
+        "message": "={{ 'A caller requested a human via the voice assistant.\\n\\nCaller: ' + ($('HH_Compute').item.json.args.first_name||'-') + '\\nPhone: ' + ($('HH_Compute').item.json.args.phone||'-') + '\\nEmail: ' + ($('HH_Compute').item.json.args.email||'-') + '\\nReason: ' + ($('HH_Compute').item.json.args.reason||'-') }}",
+        "options": {
+          "replyTo": "''"
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_ME_GMAIL_CRED_ID",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "id": "FQ_Emb",
+      "name": "FQ_Embeddings",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        -140,
+        1180
+      ],
+      "parameters": {
+        "model": "text-embedding-3-small",
+        "options": {}
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_ME_OPENAI_CRED_ID",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "id": "FQ_Pine",
+      "name": "FQ_Pinecone",
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePinecone",
+      "typeVersion": 1.1,
+      "position": [
+        -140,
+        1300
+      ],
+      "parameters": {
+        "mode": "load",
+        "pineconeIndex": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Route Tool').item.json.clinic.pinecone_index }}"
+        },
+        "prompt": "={{ $('Route Tool').item.json.args.question }}",
+        "topK": 5,
+        "includeDocumentMetadata": true,
+        "options": {
+          "pineconeNamespace": "={{ $('Route Tool').item.json.clinic.pinecone_namespace }}"
+        }
+      },
+      "credentials": {
+        "pineconeApi": {
+          "id": "REPLACE_ME_PINECONE_CRED_ID",
+          "name": "PineconeApi account"
+        }
+      }
+    },
+    {
+      "id": "FQ_Compute",
+      "name": "FQ_Compute",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        100,
+        1240
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const orig = $('Route Tool').item.json;\nconst docs = $input.all();\nlet maxScore = 0; const chunks = [];\nfor (const d of docs) { const j = d.json || {}; const s = j.score ?? j.document?.score ?? j.metadata?.score ?? null; if (typeof s === 'number' && s > maxScore) maxScore = s; const t = j.pageContent ?? j.document?.pageContent ?? j.text ?? ''; if (t) chunks.push(t); }\nconst found = maxScore > 0 ? (maxScore >= orig.clinic.pinecone_min_score) : (chunks.length > 0);\nreturn [{ json: { toolCallId: orig.toolCallId, clinic: orig.clinic, args: orig.args, found, maxScore, knowledge: chunks.slice(0, 5).join('\\n---\\n') } }];"
+      }
+    },
+    {
+      "id": "FQ_Format",
+      "name": "FQ_Format",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        340,
+        1180
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: { toolCallId: $json.toolCallId, result: { found: $json.found, knowledge: $json.found ? $json.knowledge : '' } } };"
+      }
+    },
+    {
+      "id": "FQ_Found?",
+      "name": "FQ_Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        340,
+        1320
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.found }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "FQ_UnRowShape",
+      "name": "FQ_UnRowShape",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        580,
+        1380
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const d = $json;\nreturn [{ json: { sheet_id: d.clinic.sheet_id, timestamp: $now.toISO(), session_id: '', user_question: d.args.question, intent: 'faq', pinecone_result_found: false, confidence: d.maxScore || 0, suggested_category: '', staff_reviewed: false, notes: (d.clinic.test_mode?'[TEST] ':'') + 'Asked via voice call' } }];"
+      }
+    },
+    {
+      "id": "FQ_UnLog",
+      "name": "FQ_UnLog",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        820,
+        1380
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Unanswered_Questions"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "UnknownFormat",
+      "name": "Unknown Tool Format",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -140,
+        1480
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const orig = $('Route Tool').item.json;\nreturn [{ json: { toolCallId: orig.toolCallId, result: { error: 'Unknown tool: ' + orig.name } } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Vapi Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Vapi Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Vapi Message": {
+      "main": [
+        [
+          {
+            "node": "Load Clinic Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Clinic Config": {
+      "main": [
+        [
+          {
+            "node": "Message Type?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Other Ack": {
+      "main": [
+        [
+          {
+            "node": "Respond Other",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EOC_Extract": {
+      "main": [
+        [
+          {
+            "node": "Respond EndOfCall",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "EOC_BuildConvRow",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "EOC_BuildPatientUpdate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EOC_BuildConvRow": {
+      "main": [
+        [
+          {
+            "node": "EOC_LogConversation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EOC_BuildPatientUpdate": {
+      "main": [
+        [
+          {
+            "node": "EOC_UpdatePatientRecord",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message Type?": {
+      "main": [
+        [
+          {
+            "node": "Expand Tool Calls",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "EOC_Extract",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Other Ack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Tool Calls": {
+      "main": [
+        [
+          {
+            "node": "Route Tool",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Tool": {
+      "main": [
+        [
+          {
+            "node": "LP_Read",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CA_FreeBusy",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "BA_FreeBusy",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CR_FindEvent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "EM_Compute",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HH_Compute",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "FQ_Pinecone",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Unknown Tool Format",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Tool Results": {
+      "main": [
+        [
+          {
+            "node": "Respond ToolCalls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LP_Read": {
+      "main": [
+        [
+          {
+            "node": "LP_Match",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LP_Match": {
+      "main": [
+        [
+          {
+            "node": "LP_Format",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "LP_ShapeRecord",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LP_Format": {
+      "main": [
+        [
+          {
+            "node": "Collect Tool Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LP_ShapeRecord": {
+      "main": [
+        [
+          {
+            "node": "LP_Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CA_FreeBusy": {
+      "main": [
+        [
+          {
+            "node": "CA_Compute",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CA_Compute": {
+      "main": [
+        [
+          {
+            "node": "Collect Tool Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BA_FreeBusy": {
+      "main": [
+        [
+          {
+            "node": "BA_Decide",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BA_Decide": {
+      "main": [
+        [
+          {
+            "node": "BA_Free?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BA_Free?": {
+      "main": [
+        [
+          {
+            "node": "BA_Create Event",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "BA_UnavailFormat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BA_Create Event": {
+      "main": [
+        [
+          {
+            "node": "BA_SuccessFormat",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "BA_RowShape",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BA_SuccessFormat": {
+      "main": [
+        [
+          {
+            "node": "Collect Tool Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BA_UnavailFormat": {
+      "main": [
+        [
+          {
+            "node": "Collect Tool Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BA_RowShape": {
+      "main": [
+        [
+          {
+            "node": "BA_Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BA_Upsert": {
+      "main": [
+        [
+          {
+            "node": "BA_NotifyStaff",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BA_NotifyStaff": {
+      "main": [
+        [
+          {
+            "node": "BA_SMS?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BA_SMS?": {
+      "main": [
+        [
+          {
+            "node": "BA_Twilio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_FindEvent": {
+      "main": [
+        [
+          {
+            "node": "CR_Compute",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_Compute": {
+      "main": [
+        [
+          {
+            "node": "CR_NeedsStaff?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_NeedsStaff?": {
+      "main": [
+        [
+          {
+            "node": "CR_EscFormat",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CR_Action?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_EscFormat": {
+      "main": [
+        [
+          {
+            "node": "Collect Tool Results",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "CR_EscRowShape",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_EscRowShape": {
+      "main": [
+        [
+          {
+            "node": "CR_EscSheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_EscSheets": {
+      "main": [
+        [
+          {
+            "node": "CR_EscEmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_Action?": {
+      "main": [
+        [
+          {
+            "node": "CR_Delete Event",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CR_Update Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_Delete Event": {
+      "main": [
+        [
+          {
+            "node": "CR_CancelFormat",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "CR_LogRowShape",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_CancelFormat": {
+      "main": [
+        [
+          {
+            "node": "Collect Tool Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_Update Event": {
+      "main": [
+        [
+          {
+            "node": "CR_ReschedFormat",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "CR_LogRowShape",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_ReschedFormat": {
+      "main": [
+        [
+          {
+            "node": "Collect Tool Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_LogRowShape": {
+      "main": [
+        [
+          {
+            "node": "CR_LogSheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EM_Compute": {
+      "main": [
+        [
+          {
+            "node": "EM_Format",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "EM_RowShape",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EM_Format": {
+      "main": [
+        [
+          {
+            "node": "Collect Tool Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EM_RowShape": {
+      "main": [
+        [
+          {
+            "node": "EM_Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EM_Upsert": {
+      "main": [
+        [
+          {
+            "node": "EM_Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EM_Email": {
+      "main": [
+        [
+          {
+            "node": "EM_SMS?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EM_SMS?": {
+      "main": [
+        [
+          {
+            "node": "EM_Twilio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HH_Compute": {
+      "main": [
+        [
+          {
+            "node": "HH_Format",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "HH_RowShape",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HH_Format": {
+      "main": [
+        [
+          {
+            "node": "Collect Tool Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HH_RowShape": {
+      "main": [
+        [
+          {
+            "node": "HH_Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HH_Upsert": {
+      "main": [
+        [
+          {
+            "node": "HH_Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FQ_Pinecone": {
+      "main": [
+        [
+          {
+            "node": "FQ_Compute",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FQ_Embeddings": {
+      "ai_embedding": [
+        [
+          {
+            "node": "FQ_Pinecone",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FQ_Compute": {
+      "main": [
+        [
+          {
+            "node": "FQ_Format",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "FQ_Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FQ_Format": {
+      "main": [
+        [
+          {
+            "node": "Collect Tool Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FQ_Found?": {
+      "main": [
+        [],
+        [
+          {
+            "node": "FQ_UnRowShape",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FQ_UnRowShape": {
+      "main": [
+        [
+          {
+            "node": "FQ_UnLog",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unknown Tool Format": {
+      "main": [
+        [
+          {
+            "node": "Collect Tool Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
