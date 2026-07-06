@@ -369,3 +369,38 @@ Run these in the Chat window. Expected behaviour noted.
 - Nodes carry `REPLACE_ME_*` credential IDs and config placeholders; re-select credentials after import.
 - These were hand-authored to current n8n LangChain node schemas. **Import into a scratch instance and click through each node once** before production — node param shapes drift slightly between n8n versions, especially the LangChain (`@n8n/n8n-nodes-langchain.*`) nodes. Where a node won't validate on your version, the build steps in §14 + node lists below let you rebuild it in a couple of clicks.
 - Exact node list per module is documented at the top sticky note inside each workflow file.
+
+---
+
+## 17. Version 4 — real appointment booking + patient records
+
+`workflows/version-4-dental-assistant.json` extends Version 3 with Google Calendar booking/cancel/reschedule, a 48-hour staff-escalation rule, and patient-record tracking. Single file, same three trigger branches. **97 nodes.**
+
+### New credential
+- **Google Calendar OAuth2** (`googleCalendarOAuth2Api`) → used by `APT_FreeBusy`, `APT_Create Event`, `CR_Find Event`, `CR_Delete Event`, `CR_Update Event`. Calendar is set in config to `moshiurrahman.rupu@gmail.com` (change `clinic_calendar` in `Load Clinic Config`).
+
+### New config fields (in `Load Clinic Config`)
+- `clinic_calendar` — the Google Calendar id/email to book against.
+- `appointment_duration_min` — default slot length (60).
+- `change_cutoff_hours` — the 48h escalation window.
+- `booking_model` — `tentative` (bot holds a tentative event; staff confirm).
+
+### Booking behaviour (chosen defaults)
+- **Booking model = tentative + availability check.** When the patient gives a concrete date+time and name+phone, `APT_AI` normalises it to ISO, `APT_FreeBusy` checks the calendar window, and if free `APT_Create Event` creates a **`(TENTATIVE)`** event. The bot says *"I've tentatively held X — the team will confirm,"* honoring the "don't hard-confirm" rule while still writing to the calendar. If the slot is busy → it asks for another time. If no concrete time yet → normal collect/notify path.
+- **Cancel/Reschedule 48h rule.** `CR_Find Event` + `CR_Compute` locate the patient's upcoming event and compute hours-until. If **within `change_cutoff_hours`**, the event **can't be located**, or a reschedule has **no new time** → **escalate to staff** (Escalations row + urgent email), no calendar change. Otherwise the bot cancels (`CR_Delete Event`) or moves it (`CR_Update Event`) directly.
+
+### Patient records
+New Google Sheet tab **`Patient_Records`** with columns:
+`created_at, last_interaction, first_name, last_name, email, phone, service_required, patient_type, last_conversation_summary, status, notes` (plus a hidden-friendly `patient_key` used for dedup — put it as the first column).
+
+Lookup stage runs on every message right after `Build Context`:
+1. `Read Patient Records` → `Match Patient` checks **phone first, email second**.
+2. If found → `patient_type = Existing`, existing `created_at` preserved, `last_interaction` refreshed (no duplicate row). If not found but contact given → `New` row created. If no contact yet → no row, bot keeps collecting.
+3. `patient_type` flows into every handler so replies can greet returning patients by first name.
+`Match Patient` normalises phone to digits and lowercases email before comparing, and upserts on `patient_key` so re-chats never duplicate a patient.
+
+### Caveats specific to V4
+- **AI date parsing:** `APT_AI`/`CR_AI` convert "next Tuesday 2pm" to ISO using the injected current time. Verify a few real cases — LLM date math is good but not perfect; consider adding a deterministic date-parser node if you see drift.
+- **Event matching for cancel/reschedule** relies on the patient's email/phone appearing on the calendar event (as attendee or in the description). Book with the patient's email as attendee (or keep phone in the description — the booking path already writes it) so lookups match; otherwise it safely escalates to staff.
+- **Google Calendar node params** are version-sensitive — click through the 5 calendar nodes once on import.
+- Cancelling outside 48h **does** confirm the cancellation to the patient (that's the intended "bot handles it" behaviour). If you'd rather keep cancellations tentative too, tell me and I'll gate them the same way as bookings.

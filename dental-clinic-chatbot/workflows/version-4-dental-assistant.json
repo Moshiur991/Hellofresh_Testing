@@ -1,0 +1,3661 @@
+{
+  "name": "Version 4 Dental assistant",
+  "nodes": [
+    {
+      "id": "sticky_main",
+      "name": "README",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1400,
+        -720
+      ],
+      "parameters": {
+        "width": 940,
+        "height": 560,
+        "color": 4,
+        "content": "## Version 3 Dental assistant\nAI-node-per-intent design. A lean classifier routes to a dedicated AI node for each intent; each AI node DECIDES the reply + which downstream actions to take (notify staff / SMS), and a few deterministic nodes EXECUTE the writes. **Simple Memory** (in-app) holds session history.\n\n### Flow\nChat Trigger \u2192 Load Config \u2192 Classify + Extract (AI + Simple Memory) \u2192 Build Context \u2192 Route By Intent \u2192\n  \u2022 FAQ: Pinecone retrieve \u2192 FAQ AI decides answer vs escalate\n  \u2022 Appointment / Cancel-Reschedule / Emergency / Handoff: dedicated AI node decides reply + email/SMS content + notify flags \u2192 Sheets upsert \u2192 (gated) Gmail + Twilio\n  \u2192 Assemble \u2192 Log Conversation \u2192 Respond\nPlus: KB Ingestion (manual) and Follow-up Reminder (hourly) branches.\n\n### Where AI decides vs Code executes\n- **AI nodes** (own system+user message): Classify + Extract, FAQ_AI, APT_AI, CR_AI, EMG_AI, HO_AI.\n- **Code nodes** (kept only where consistency is required): Build Context (merge config + compute open-hours + guard), *_BuildRow (build the exact Sheets row), FAQ_Extract Chunks, FAQ_Apply/UnRow, *_Return, Assemble Final, Find Stale New Leads, Prep Metadata.\n\n### Shared AI sub-nodes\n- 'Classifier Model' (temp 0) \u2192 classifier.  'Handler Model' (temp 0.3) \u2192 all handler AIs + FAQ AI.\n- 'Handler Parser' shared by APT/CR/EMG/HO.  Separate parsers for classifier and FAQ.\n- 'Simple Memory' \u2192 classifier only (handlers get patient data from the classifier, so they stay stateless).\n\n### Credentials (set after import)\nOpenAI \u2192 all Model + Embeddings nodes.  Pinecone \u2192 both vector-store nodes.  Google Sheets \u2192 all Sheets nodes.  Gmail \u2192 all Gmail nodes.  Twilio \u2192 all Twilio nodes.  Google Drive \u2192 the 2 ingestion nodes.  No Postgres needed (Simple Memory is in-app).\n\nSMS OFF in v1 via sms_enabled_* flags + an IF before each Twilio node.  Pinecone index dim = 1536."
+      }
+    },
+    {
+      "id": "chat",
+      "name": "Chat Trigger",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -1400,
+        140
+      ],
+      "webhookId": "v3-dental-assistant",
+      "parameters": {
+        "public": true,
+        "options": {
+          "responseMode": "lastNode",
+          "title": "Dental Clinic Assistant",
+          "subtitle": "Ask a question or request an appointment. This is not a confirmed booking."
+        }
+      }
+    },
+    {
+      "id": "cfg",
+      "name": "Load Clinic Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1180,
+        140
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "c1",
+              "name": "clinic_id",
+              "value": "smilecare",
+              "type": "string"
+            },
+            {
+              "id": "c2",
+              "name": "clinic_name",
+              "value": "{{clinic_name}}",
+              "type": "string"
+            },
+            {
+              "id": "c3",
+              "name": "address",
+              "value": "{{clinic_address}}",
+              "type": "string"
+            },
+            {
+              "id": "c4",
+              "name": "staff_email",
+              "value": "{{staff_email}}",
+              "type": "string"
+            },
+            {
+              "id": "c5",
+              "name": "staff_phone",
+              "value": "{{staff_phone}}",
+              "type": "string"
+            },
+            {
+              "id": "c6",
+              "name": "twilio_from",
+              "value": "{{TWILIO_PHONE_NUMBER}}",
+              "type": "string"
+            },
+            {
+              "id": "c7",
+              "name": "pinecone_index",
+              "value": "dental-clinic-kb",
+              "type": "string"
+            },
+            {
+              "id": "c8",
+              "name": "pinecone_namespace",
+              "value": "smilecare_knowledge_base",
+              "type": "string"
+            },
+            {
+              "id": "c9",
+              "name": "sheet_id",
+              "value": "{{GOOGLE_SHEET_ID}}",
+              "type": "string"
+            },
+            {
+              "id": "c10",
+              "name": "drive_folder_id",
+              "value": "{{DRIVE_FOLDER_ID}}",
+              "type": "string"
+            },
+            {
+              "id": "c11",
+              "name": "hours_json",
+              "value": "{\"mon\":\"9-17\",\"tue\":\"9-17\",\"wed\":\"9-17\",\"thu\":\"9-19\",\"fri\":\"9-15\",\"sat\":\"closed\",\"sun\":\"closed\"}",
+              "type": "string"
+            },
+            {
+              "id": "c12",
+              "name": "after_hours_message",
+              "value": "Please note we are currently closed. Our team will follow up with you during our next business hours.",
+              "type": "string"
+            },
+            {
+              "id": "c13",
+              "name": "sms_enabled_patient",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "c14",
+              "name": "sms_enabled_staff",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "c15",
+              "name": "pinecone_min_score",
+              "value": 0.78,
+              "type": "number"
+            },
+            {
+              "id": "c16",
+              "name": "test_mode",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "c17",
+              "name": "chatInput",
+              "value": "={{ $json.chatInput }}",
+              "type": "string"
+            },
+            {
+              "id": "c18",
+              "name": "sessionId",
+              "value": "={{ $json.sessionId }}",
+              "type": "string"
+            },
+            {
+              "id": "c19",
+              "name": "clinic_calendar",
+              "value": "moshiurrahman.rupu@gmail.com",
+              "type": "string"
+            },
+            {
+              "id": "c20",
+              "name": "appointment_duration_min",
+              "value": 60,
+              "type": "number"
+            },
+            {
+              "id": "c21",
+              "name": "change_cutoff_hours",
+              "value": 48,
+              "type": "number"
+            },
+            {
+              "id": "c22",
+              "name": "booking_model",
+              "value": "tentative",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "clmodel",
+      "name": "Classifier Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        -940,
+        360
+      ],
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4o-mini"
+        },
+        "options": {
+          "temperature": 0
+        }
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_ME_OPENAI_CRED_ID",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "id": "mem",
+      "name": "Simple Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        -820,
+        360
+      ],
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Chat Trigger').item.json.sessionId }}",
+        "contextWindowLength": 12
+      }
+    },
+    {
+      "id": "clparser",
+      "name": "Classifier Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        -700,
+        360
+      ],
+      "parameters": {
+        "schemaType": "fromJson",
+        "jsonSchemaExample": "{\n  \"intent\": \"appointment_request\",\n  \"confidence\": 0.9,\n  \"urgency\": \"medium\",\n  \"summary\": \"User wants to book a cleaning.\",\n  \"patient\": {\n    \"first_name\": \"\",\n    \"last_name\": \"\",\n    \"email\": \"\",\n    \"phone\": \"\",\n    \"patient_type\": \"\",\n    \"service\": \"\",\n    \"preferred_date\": \"\",\n    \"preferred_time\": \"\",\n    \"existing_appt_datetime\": \"\",\n    \"new_preferred_datetime\": \"\",\n    \"symptoms\": \"\",\n    \"reason\": \"\"\n  }\n}"
+      }
+    },
+    {
+      "id": "classify",
+      "name": "Classify + Extract",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [
+        -940,
+        140
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "=Latest patient message:\n{{ $json.chatInput }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are the intent router AND detail extractor for a dental clinic chatbot. You DO NOT write the patient-facing reply. Output ONLY the JSON object defined by the schema, using the conversation history for context.\n\nintent must be exactly one of: faq | appointment_request | cancellation_request | reschedule_request | emergency | new_patient_question | human_handoff | unknown\n\nRules:\n- emergency = severe tooth pain, broken/knocked-out tooth, swelling, bleeding, dental injury, possible infection, or severe pain after a procedure. If unsure between emergency and appointment, choose emergency (safer).\n- human_handoff = user explicitly asks for a person / phone call / front desk, or says the bot isn't helping.\n- confidence 0.0-1.0. urgency: high (emergency/same-day/severe), medium (appointment/new patient), low (general FAQ).\n- summary: one neutral sentence. NEVER include clinical advice or diagnosis. NEVER confirm any appointment.\n- patient.first_name / patient.last_name: split the patient's name into first and last name when given.\n- patient.*: fill only fields the user has clearly provided across the whole conversation; leave others as \"\". Do not normalise phone numbers beyond copying the digits the user typed. Put only a short symptom summary in patient.symptoms (never a long medical history).\nOutput JSON only."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "buildctx",
+      "name": "Build Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -660,
+        140
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const cfg=$('Load Clinic Config').item.json;\nconst ai=$json.output ?? $json;\nif(!cfg.pinecone_namespace||!cfg.sheet_id){throw new Error('Clinic config incomplete: pinecone_namespace or sheet_id is empty');}\nlet isOpen=true;\ntry{const hours=JSON.parse(cfg.hours_json||'{}');const now=$now;const dayKey=['sun','mon','tue','wed','thu','fri','sat'][now.weekday%7];const spec=hours[dayKey];if(!spec||spec==='closed'){isOpen=false;}else{const [o,c]=spec.split('-').map(Number);const h=now.hour;isOpen=h>=o&&h<c;}}catch(e){isOpen=true;}\nconst pt=ai.patient||{};\nconst fullName=`${pt.first_name||''} ${pt.last_name||''}`.trim()||(pt.name||'');\nreturn {json:{\n clinic:{clinic_id:cfg.clinic_id,clinic_name:cfg.clinic_name,address:cfg.address,staff_email:cfg.staff_email,staff_phone:cfg.staff_phone,twilio_from:cfg.twilio_from,pinecone_index:cfg.pinecone_index,pinecone_namespace:cfg.pinecone_namespace,sheet_id:cfg.sheet_id,drive_folder_id:cfg.drive_folder_id,hours_json:cfg.hours_json,after_hours_message:cfg.after_hours_message,sms_enabled_patient:cfg.sms_enabled_patient,sms_enabled_staff:cfg.sms_enabled_staff,pinecone_min_score:cfg.pinecone_min_score,test_mode:cfg.test_mode,is_open_now:isOpen,clinic_calendar:cfg.clinic_calendar,appointment_duration_min:cfg.appointment_duration_min,change_cutoff_hours:cfg.change_cutoff_hours,booking_model:cfg.booking_model},\n session_id:cfg.sessionId,timestamp:$now.toISO(),user_message:cfg.chatInput,\n intent:ai.intent||'unknown',confidence:ai.confidence??0,urgency:ai.urgency||'normal',summary:ai.summary||'',\n patient:{first_name:pt.first_name||'',last_name:pt.last_name||'',name:fullName,email:pt.email||'',phone:pt.phone||'',patient_type:pt.patient_type||'',service:pt.service||'',preferred_date:pt.preferred_date||'',preferred_time:pt.preferred_time||'',existing_appt_datetime:pt.existing_appt_datetime||'',new_preferred_datetime:pt.new_preferred_datetime||'',symptoms:pt.symptoms||'',reason:pt.reason||''},\n bot_response:''\n}};"
+      }
+    },
+    {
+      "id": "switch",
+      "name": "Route By Intent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -420,
+        140
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "faq",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  },
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "new_patient_question",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "or"
+              },
+              "outputKey": "FAQ"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "appointment_request",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "Appointment"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "cancellation_request",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  },
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "reschedule_request",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "or"
+              },
+              "outputKey": "CancelReschedule"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "emergency",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "Emergency"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "human_handoff",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "Handoff"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      }
+    },
+    {
+      "id": "hmodel",
+      "name": "Handler Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        -120,
+        -520
+      ],
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4o-mini"
+        },
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_ME_OPENAI_CRED_ID",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "id": "hparser",
+      "name": "Handler Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        -520
+      ],
+      "parameters": {
+        "schemaType": "fromJson",
+        "jsonSchemaExample": "{\n  \"reply\": \"Thanks! Your request has been sent to our team; this is a request only and they will confirm.\",\n  \"notify_staff\": true,\n  \"email_subject\": \"[Clinic] Appointment request - Jane Doe\",\n  \"email_body\": \"Request type: Appointment request\\nUrgency: medium\\nPatient: Jane Doe\\nPhone: 4165550100\\n...\",\n  \"send_sms\": false,\n  \"sms_body\": \"Hi Jane, we received your appointment request. Our team will contact you to confirm.\",\n  \"status\": \"New\"\n}"
+      }
+    },
+    {
+      "id": "emb",
+      "name": "Embeddings OpenAI",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        -120,
+        -120
+      ],
+      "parameters": {
+        "model": "text-embedding-3-small",
+        "options": {}
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_ME_OPENAI_CRED_ID",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "id": "pine",
+      "name": "Pinecone Vector Store",
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePinecone",
+      "typeVersion": 1.1,
+      "position": [
+        -160,
+        -320
+      ],
+      "parameters": {
+        "mode": "load",
+        "pineconeIndex": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.clinic.pinecone_index }}"
+        },
+        "prompt": "={{ $json.user_message }}",
+        "topK": 5,
+        "includeDocumentMetadata": true,
+        "options": {
+          "pineconeNamespace": "={{ $json.clinic.pinecone_namespace }}"
+        }
+      },
+      "credentials": {
+        "pineconeApi": {
+          "id": "REPLACE_ME_PINECONE_CRED_ID",
+          "name": "PineconeApi account"
+        }
+      }
+    },
+    {
+      "id": "faqextract",
+      "name": "FAQ_Extract Chunks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        80,
+        -320
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const ctx = $('Context Ready').first().json;\nconst docs = $input.all();\nlet maxScore = 0; const chunks = [];\nfor (const d of docs) { const j = d.json || {}; const s = j.score ?? j.document?.score ?? j.metadata?.score ?? null; if (typeof s === 'number' && s > maxScore) maxScore = s; const t = j.pageContent ?? j.document?.pageContent ?? j.text ?? ''; if (t) chunks.push(t); }\nreturn [{ json: { ...ctx, faq_max_score: maxScore, faq_chunks: chunks.slice(0,5).join('\\n---\\n') } }];"
+      }
+    },
+    {
+      "id": "faqparser",
+      "name": "FAQ Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        320,
+        -140
+      ],
+      "parameters": {
+        "schemaType": "fromJson",
+        "jsonSchemaExample": "{ \"reply\": \"Our hours are Monday to Friday...\", \"answer_found\": true }"
+      }
+    },
+    {
+      "id": "faqai",
+      "name": "FAQ_AI",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [
+        320,
+        -320
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "=Retrieval confidence (0-1): {{ $json.faq_max_score }}\nKnowledge chunks:\n{{ $json.faq_chunks }}\n\nPatient question: {{ $json.user_message }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are a friendly, professional dental clinic assistant answering an FAQ. Decide your reply using ONLY the Knowledge chunks provided.\n- If the Knowledge clearly contains the answer, set answer_found=true and write a warm 2-4 sentence reply grounded strictly in it.\n- If the Knowledge does NOT clearly contain the answer (or retrieval confidence is low), set answer_found=false and write a reply that politely says you're not certain and offers to have the team follow up, asking for their name and best phone or email.\n- NEVER invent clinic policies, prices, hours, or insurance details. NEVER give medical diagnosis or clinical advice (for symptoms, suggest contacting the clinic). NEVER state or imply anything is booked or confirmed.\nOutput ONLY the JSON schema."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "faqapply",
+      "name": "FAQ_Apply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        -320
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ctx = $('Context Ready').item.json;\nconst dec = $json.output ?? $json;\nreturn { json: { ...ctx, bot_response: dec.reply || 'Let me connect you with our team to be sure.', answer_found: dec.answer_found === true, faq_max_score: $('FAQ_Extract Chunks').first().json.faq_max_score } };"
+      }
+    },
+    {
+      "id": "faqif",
+      "name": "FAQ_Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        800,
+        -320
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.answer_found }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "faqunrow",
+      "name": "FAQ_UnRow",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        -220
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ctx = $json;\nreturn { json: { sheet_id: ctx.clinic.sheet_id, timestamp: $now.toISO(), session_id: ctx.session_id, user_question: ctx.user_message, intent: ctx.intent, pinecone_result_found: false, confidence: ctx.faq_max_score || 0, suggested_category: '', staff_reviewed: false, notes: (ctx.clinic.test_mode ? '[TEST] ' : '') + (ctx.summary || '') } };"
+      }
+    },
+    {
+      "id": "faqlog",
+      "name": "FAQ_Log Unanswered",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1280,
+        -220
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Unanswered_Questions"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "faqret",
+      "name": "FAQ_Return",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        -220
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: $('FAQ_Apply').item.json };"
+      }
+    },
+    {
+      "id": "emgai",
+      "name": "EMG_AI",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [
+        -120,
+        840
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "=Clinic: {{ $json.clinic.clinic_name }}\nKnown patient details (JSON): {{ JSON.stringify($json.patient) }}\nConversation summary: {{ $json.summary }}\nLatest patient message: {{ $json.user_message }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are the DENTAL EMERGENCY handler for a clinic chatbot. Be calm, brief, reassuring. You are NOT a clinician. Output ONLY the JSON schema.\n\nHard rules:\n- Do NOT diagnose or give medical certainty.\n- ALWAYS notify staff: set notify_staff=true and status='New' regardless of how much info you have (urgent cases must never be missed).\n- If the patient mentions severe swelling, trouble breathing/swallowing, uncontrolled bleeding, high fever, or a serious injury, your 'reply' MUST clearly advise them to seek urgent or emergency medical care immediately and not wait for a callback.\n- If name or phone is missing, ask for them in 'reply' (but still notify staff).\n\nOutput fields:\n- 'reply': 3-4 sentence reassuring message per the rules above.\n- 'email_subject': 'EMERGENCY - [<clinic>] - <name or unknown>'.\n- 'email_body': urgent staff note starting 'EMERGENCY - REVIEW NOW' with name, phone, email, reported issue, symptoms, whether red-flag symptoms were present, the original message, and 'contact the patient as a priority'.\n- 'send_sms': true (this is the STAFF urgent alert); 'sms_body': short 'URGENT dental: <name> <phone>. <issue>. Review now.'\n- 'status': 'New'.\nOutput JSON only."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "emgrow",
+      "name": "EMG_BuildRow",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        140,
+        840
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ctx = $('Context Ready').item.json; const p = ctx.patient; const dec = $json.output ?? $json;\nconst day = $now.format('yyyy-LL-dd');\nreturn { json: { sheet_id: ctx.clinic.sheet_id, lead_key: `${ctx.clinic.clinic_id}|${p.phone||'nophone'}|emergency|${day}`, timestamp: ctx.timestamp, session_id: ctx.session_id, patient_name: p.name, phone: p.phone, email: p.email, issue_type: 'emergency', urgency: 'high', summary: (ctx.clinic.test_mode?'[TEST] ':'') + (ctx.summary || ctx.user_message), staff_notified: true, sms_sent: false, status: dec.status || 'New', notes: p.symptoms ? ('Symptoms: ' + p.symptoms) : '' } };"
+      }
+    },
+    {
+      "id": "emgupsert",
+      "name": "EMG_Upsert",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        380,
+        840
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Escalations"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [
+            "lead_key"
+          ],
+          "value": {}
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "emggmail",
+      "name": "EMG_Gmail",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        620,
+        840
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $('Context Ready').item.json.clinic.staff_email }}",
+        "subject": "={{ ($('EMG_AI').item.json.output || $('EMG_AI').item.json).email_subject }}",
+        "emailType": "text",
+        "message": "={{ ($('EMG_AI').item.json.output || $('EMG_AI').item.json).email_body }}",
+        "options": {
+          "replyTo": "={{ $('Context Ready').item.json.patient.email || '' }}"
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_ME_GMAIL_CRED_ID",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "id": "emgsms",
+      "name": "EMG_SMS?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        860,
+        840
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ ($('EMG_AI').item.json.output || $('EMG_AI').item.json).send_sms }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "leftValue": "={{ $('Context Ready').item.json.clinic.sms_enabled_staff }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "emgtwilio",
+      "name": "EMG_Twilio",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        760
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "sms",
+        "operation": "send",
+        "from": "={{ $('Context Ready').item.json.clinic.twilio_from }}",
+        "to": "={{ $('Context Ready').item.json.clinic.staff_phone }}",
+        "message": "={{ ($('EMG_AI').item.json.output || $('EMG_AI').item.json).sms_body }}",
+        "options": {}
+      },
+      "credentials": {
+        "twilioApi": {
+          "id": "REPLACE_ME_TWILIO_CRED_ID",
+          "name": "Twilio account"
+        }
+      }
+    },
+    {
+      "id": "emgret",
+      "name": "EMG_Return",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        840
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const dec = $('EMG_AI').item.json.output ?? $('EMG_AI').item.json;\nreturn { json: { ...$('Context Ready').item.json, bot_response: dec.reply } };"
+      }
+    },
+    {
+      "id": "hoai",
+      "name": "HO_AI",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [
+        -120,
+        1180
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "=Clinic: {{ $json.clinic.clinic_name }}\nKnown patient details (JSON): {{ JSON.stringify($json.patient) }}\nConversation summary: {{ $json.summary }}\nLatest patient message: {{ $json.user_message }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are the HUMAN HANDOFF handler for a dental clinic chatbot. The patient wants to reach a person. Output ONLY the JSON schema.\n\nHard rules:\n- Acknowledge warmly and confirm you'll pass this to the clinic team. Do NOT promise a specific callback time. No medical advice. 2-3 sentences.\n\nDecision logic:\n- Minimum info to notify staff = full name AND (phone OR email). If missing: notify_staff=false, send_sms=false, status='Collecting', 'reply' asks for name and best phone/email.\n- If present: notify_staff=true, status='New'. 'email_subject' = '[<clinic>] Human handoff request - <name>'. 'email_body' = staff note (name, phone, email, reason/summary, original message, recommended next action). 'reply' says the team will follow up.\n- send_sms true ONLY when notify_staff true; sms_body = short 'a team member will follow up soon'.\nOutput JSON only."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "horow",
+      "name": "HO_BuildRow",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        140,
+        1180
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ctx = $('Context Ready').item.json; const p = ctx.patient; const dec = $json.output ?? $json;\nconst day = $now.format('yyyy-LL-dd');\nreturn { json: { sheet_id: ctx.clinic.sheet_id, lead_key: `${ctx.clinic.clinic_id}|${p.phone||p.email||'nocontact'}|handoff|${day}`, timestamp: ctx.timestamp, session_id: ctx.session_id, patient_name: p.name, phone: p.phone, email: p.email, issue_type: 'human_handoff', urgency: ctx.urgency || 'medium', summary: (ctx.clinic.test_mode?'[TEST] ':'') + (ctx.summary || ctx.user_message), staff_notified: !!dec.notify_staff, sms_sent: false, status: dec.status || 'Collecting', notes: p.reason || '' } };"
+      }
+    },
+    {
+      "id": "houpsert",
+      "name": "HO_Upsert",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        380,
+        1180
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Escalations"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [
+            "lead_key"
+          ],
+          "value": {}
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "honotify",
+      "name": "HO_Notify?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        620,
+        1180
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ ($('HO_AI').item.json.output || $('HO_AI').item.json).notify_staff }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "hogmail",
+      "name": "HO_Gmail",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        860,
+        1100
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $('Context Ready').item.json.clinic.staff_email }}",
+        "subject": "={{ ($('HO_AI').item.json.output || $('HO_AI').item.json).email_subject }}",
+        "emailType": "text",
+        "message": "={{ ($('HO_AI').item.json.output || $('HO_AI').item.json).email_body }}",
+        "options": {
+          "replyTo": "={{ $('Context Ready').item.json.patient.email || '' }}"
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_ME_GMAIL_CRED_ID",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "id": "hosms",
+      "name": "HO_SMS?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1100,
+        1100
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ ($('HO_AI').item.json.output || $('HO_AI').item.json).send_sms }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "leftValue": "={{ $('Context Ready').item.json.clinic.sms_enabled_patient }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "hotwilio",
+      "name": "HO_Twilio",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        1020
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "sms",
+        "operation": "send",
+        "from": "={{ $('Context Ready').item.json.clinic.twilio_from }}",
+        "to": "={{ $('Context Ready').item.json.patient.phone }}",
+        "message": "={{ ($('HO_AI').item.json.output || $('HO_AI').item.json).sms_body }}",
+        "options": {}
+      },
+      "credentials": {
+        "twilioApi": {
+          "id": "REPLACE_ME_TWILIO_CRED_ID",
+          "name": "Twilio account"
+        }
+      }
+    },
+    {
+      "id": "horet",
+      "name": "HO_Return",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        1180
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const dec = $('HO_AI').item.json.output ?? $('HO_AI').item.json;\nreturn { json: { ...$('Context Ready').item.json, bot_response: dec.reply } };"
+      }
+    },
+    {
+      "id": "unknown",
+      "name": "Unknown \u2192 Clarify",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -120,
+        1460
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "u1",
+              "name": "bot_response",
+              "value": "I'm sorry, I didn't quite catch that. I can help with clinic questions, booking, cancelling or rescheduling an appointment, dental emergencies, or connecting you with our team. Could you tell me a little more about what you need?",
+              "type": "string"
+            }
+          ]
+        },
+        "include": "all",
+        "options": {}
+      }
+    },
+    {
+      "id": "assemble",
+      "name": "Assemble Final",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1860,
+        560
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const c=$json;const clinic=c.clinic||{};let reply=c.bot_response||'Thank you - our team will follow up with you.';const actionable=['appointment_request','cancellation_request','reschedule_request','human_handoff','emergency'];if(clinic&&clinic.is_open_now===false&&actionable.includes(c.intent)){reply=reply+'\\n\\n'+(clinic.after_hours_message||'');}return{json:{bot_response:reply,sheet_id:clinic.sheet_id,timestamp:c.timestamp||$now.toISO(),session_id:c.session_id,user_message:c.user_message,intent:c.intent,confidence:c.confidence,urgency:c.urgency,patient_name:c.patient?.name||'',phone:c.patient?.phone||'',email:c.patient?.email||'',status:'Logged',notes:(clinic.test_mode?'[TEST] ':'')+(c.summary||'')}};"
+      }
+    },
+    {
+      "id": "logconv",
+      "name": "Log Conversation",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2100,
+        560
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Conversations"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "respond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2340,
+        560
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "r1",
+              "name": "output",
+              "value": "={{ $('Assemble Final').item.json.bot_response }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "sticky_kb",
+      "name": "KB Ingestion branch",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1400,
+        1720
+      ],
+      "parameters": {
+        "width": 520,
+        "height": 150,
+        "color": 6,
+        "content": "## KB Ingestion (run manually)\nRun once per Drive subfolder: set folder_id + category in 'Ingestion Config'. Index dim = 1536."
+      }
+    },
+    {
+      "id": "kbman",
+      "name": "Run KB Ingestion",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1400,
+        1940
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "kbcfg",
+      "name": "Ingestion Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1180,
+        1940
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "k1",
+              "name": "clinic_name",
+              "value": "{{clinic_name}}",
+              "type": "string"
+            },
+            {
+              "id": "k2",
+              "name": "pinecone_index",
+              "value": "dental-clinic-kb",
+              "type": "string"
+            },
+            {
+              "id": "k3",
+              "name": "pinecone_namespace",
+              "value": "smilecare_knowledge_base",
+              "type": "string"
+            },
+            {
+              "id": "k4",
+              "name": "folder_id",
+              "value": "{{DRIVE_SUBFOLDER_ID}}",
+              "type": "string"
+            },
+            {
+              "id": "k5",
+              "name": "category",
+              "value": "FAQ",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "kbsearch",
+      "name": "List Files In Folder",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -940,
+        1940
+      ],
+      "parameters": {
+        "resource": "fileFolder",
+        "operation": "search",
+        "searchMethod": "query",
+        "queryString": "={{ \"'\" + $json.folder_id + \"' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'\" }}",
+        "returnAll": true,
+        "filter": {},
+        "options": {}
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "REPLACE_ME_DRIVE_CRED_ID",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "id": "kbdl",
+      "name": "Download File",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -700,
+        1940
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "file",
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.id }}"
+        },
+        "options": {
+          "googleFileConversion": {
+            "conversion": {
+              "docsToFormat": "text/plain"
+            }
+          },
+          "binaryPropertyName": "data"
+        }
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "REPLACE_ME_DRIVE_CRED_ID",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "id": "kbmeta",
+      "name": "Prep Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -460,
+        1940
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const cfg=$('Ingestion Config').first().json;const f=$json;return{json:{clinic_name:cfg.clinic_name,category:cfg.category,source_document:f.name||f.originalFilename||'unknown',source_url:f.webViewLink||'',last_updated:$now.toISODate(),chunk_id:(f.name||'doc')},binary:$binary};"
+      }
+    },
+    {
+      "id": "kbemb",
+      "name": "Embeddings OpenAI (KB)",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        -160,
+        2160
+      ],
+      "parameters": {
+        "model": "text-embedding-3-small",
+        "options": {}
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_ME_OPENAI_CRED_ID",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "id": "kbsplit",
+      "name": "Recursive Text Splitter",
+      "type": "@n8n/n8n-nodes-langchain.textSplitterRecursiveCharacterTextSplitter",
+      "typeVersion": 1,
+      "position": [
+        60,
+        2320
+      ],
+      "parameters": {
+        "chunkSize": 1000,
+        "chunkOverlap": 150,
+        "options": {}
+      }
+    },
+    {
+      "id": "kbloader",
+      "name": "Default Data Loader",
+      "type": "@n8n/n8n-nodes-langchain.documentDefaultDataLoader",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        2160
+      ],
+      "parameters": {
+        "dataType": "binary",
+        "binaryMode": "specificField",
+        "binaryDataKey": "data",
+        "textSplittingMode": "custom",
+        "options": {
+          "metadata": {
+            "metadataValues": [
+              {
+                "name": "clinic_name",
+                "value": "={{ $json.clinic_name }}"
+              },
+              {
+                "name": "category",
+                "value": "={{ $json.category }}"
+              },
+              {
+                "name": "source_document",
+                "value": "={{ $json.source_document }}"
+              },
+              {
+                "name": "source_url",
+                "value": "={{ $json.source_url }}"
+              },
+              {
+                "name": "last_updated",
+                "value": "={{ $json.last_updated }}"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "kbins",
+      "name": "Pinecone \u2014 Insert",
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePinecone",
+      "typeVersion": 1.1,
+      "position": [
+        -220,
+        1940
+      ],
+      "parameters": {
+        "mode": "insert",
+        "pineconeIndex": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Ingestion Config').first().json.pinecone_index }}"
+        },
+        "options": {
+          "pineconeNamespace": "={{ $('Ingestion Config').first().json.pinecone_namespace }}",
+          "clearNamespace": false
+        }
+      },
+      "credentials": {
+        "pineconeApi": {
+          "id": "REPLACE_ME_PINECONE_CRED_ID",
+          "name": "PineconeApi account"
+        }
+      }
+    },
+    {
+      "id": "sticky_rem",
+      "name": "Reminder branch",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1400,
+        2540
+      ],
+      "parameters": {
+        "width": 520,
+        "height": 130,
+        "color": 5,
+        "content": "## Follow-up Reminder (hourly)\nFlags appointment leads still 'New' after 24h and emails staff a digest."
+      }
+    },
+    {
+      "id": "remsched",
+      "name": "Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1400,
+        2740
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "remcfg",
+      "name": "Reminder Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1180,
+        2740
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "rr1",
+              "name": "sheet_id",
+              "value": "{{GOOGLE_SHEET_ID}}",
+              "type": "string"
+            },
+            {
+              "id": "rr2",
+              "name": "staff_email",
+              "value": "{{staff_email}}",
+              "type": "string"
+            },
+            {
+              "id": "rr3",
+              "name": "clinic_name",
+              "value": "{{clinic_name}}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "remread",
+      "name": "Read Appointment Requests",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -940,
+        2740
+      ],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Appointment_Requests"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "remfilter",
+      "name": "Find Stale New Leads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -700,
+        2740
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const cfg=$('Reminder Config').first().json;const cutoff=$now.minus({hours:24});const rows=$input.all().map(i=>i.json);const stale=rows.filter(r=>{const status=String(r.status||'').toLowerCase();if(status!=='new')return false;const created=r.created_at?DateTime.fromISO(String(r.created_at)):null;return created&&created.isValid&&created<cutoff;});const lines=stale.map(r=>`- ${r.patient_name||'(no name)'} | ${r.phone||'-'} | ${r.requested_service||'-'} | created ${r.created_at}`);const body=stale.length?`The following appointment leads are still marked \"New\" after 24h and need follow-up:\\n\\n${lines.join('\\n')}\\n\\nPlease update their status once actioned.`:'';return[{json:{should_send:stale.length>0,count:stale.length,to:cfg.staff_email,clinic_name:cfg.clinic_name,body}}];"
+      }
+    },
+    {
+      "id": "remif",
+      "name": "Any Stale?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -460,
+        2740
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.should_send }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "remmail",
+      "name": "Email Staff Reminder",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -220,
+        2660
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $json.to }}",
+        "subject": "={{ '[' + $json.clinic_name + '] ' + $json.count + ' appointment lead(s) awaiting follow-up (24h+)' }}",
+        "emailType": "text",
+        "message": "={{ $json.body }}",
+        "options": {}
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_ME_GMAIL_CRED_ID",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "id": "prread",
+      "name": "Read Patient Records",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -660,
+        600
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.clinic.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Patient_Records"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "prmatch",
+      "name": "Match Patient",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -420,
+        600
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const ctx=$('Build Context').first().json; const p=ctx.patient;\nconst phone=(p.phone||'').replace(/\\D/g,''); const email=(p.email||'').trim().toLowerCase();\nconst rows=$input.all().map(i=>i.json).filter(r=>r && (r.patient_key||r.phone||r.email));\nlet match=null;\nif(phone && phone.length>=7){match=rows.find(r=>String(r.phone||'').replace(/\\D/g,'')===phone);}\nif(!match && email){match=rows.find(r=>String(r.email||'').trim().toLowerCase()===email);}\nconst hasContact=!!(phone||email);\nconst isExisting=!!match;\nconst patientKey=phone||email||'';\nconst created_at=(match&&match.created_at)||ctx.timestamp;\nconst patient_type=isExisting?'Existing':(hasContact?'New':(p.patient_type||''));\nconst merged={...ctx, patient:{...p, patient_type}, is_returning:isExisting, has_contact:hasContact, patient_key:patientKey};\nconst record={sheet_id:ctx.clinic.sheet_id, patient_key:patientKey, created_at, last_interaction:ctx.timestamp, first_name:p.first_name, last_name:p.last_name, email:p.email, phone:p.phone, service_required:p.service, patient_type, last_conversation_summary:(ctx.clinic.test_mode?'[TEST] ':'')+ctx.summary, status:'Active', notes:''};\nreturn [{json:{...merged, _record:record}}];"
+      }
+    },
+    {
+      "id": "prhas",
+      "name": "Has Contact?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -180,
+        600
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.has_contact }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "prshape",
+      "name": "Shape Record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        60,
+        500
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: $json._record };"
+      }
+    },
+    {
+      "id": "prupsert",
+      "name": "Upsert Patient Record",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        300,
+        500
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Patient_Records"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [
+            "patient_key"
+          ],
+          "value": {}
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "prready",
+      "name": "Context Ready",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        700
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const c={...$('Match Patient').first().json}; delete c._record; return { json: c };"
+      }
+    },
+    {
+      "id": "aptparser",
+      "name": "APT_Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        -760
+      ],
+      "parameters": {
+        "schemaType": "fromJson",
+        "jsonSchemaExample": "{\n  \"reply\": \"\",\n  \"notify_staff\": true,\n  \"email_subject\": \"\",\n  \"email_body\": \"\",\n  \"send_sms\": false,\n  \"sms_body\": \"\",\n  \"status\": \"New\",\n  \"ready_to_book\": false,\n  \"appointment_start_iso\": \"\"\n}"
+      }
+    },
+    {
+      "id": "aptai",
+      "name": "APT_AI",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [
+        -120,
+        160
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "=Clinic: {{ $json.clinic.clinic_name }}\nNow (ISO): {{ $now.toISO() }}\nAppointment length (min): {{ $json.clinic.appointment_duration_min }}\nCurrently open: {{ $json.clinic.is_open_now }}\nPatient type: {{ $json.patient.patient_type }}\nKnown patient details (JSON): {{ JSON.stringify($json.patient) }}\nConversation summary: {{ $json.summary }}\nLatest patient message: {{ $json.user_message }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are the APPOINTMENT handler for a dental clinic chatbot. You decide the patient-facing reply, normalise any requested appointment time, and decide whether to notify staff. Output ONLY the JSON schema.\n\nHard rules:\n- Bookings are TENTATIVE. Never tell the patient a time is confirmed; a later step holds the slot and staff confirm.\n- No medical advice/diagnosis. Warm, 2-4 sentence reply.\n\nDecision logic:\n- Minimum to proceed = full name AND phone. If missing: notify_staff=false, ready_to_book=false, appointment_start_iso='', status='Collecting', reply asks for the single most important missing detail.\n- If the patient gave a CONCRETE date AND time and name+phone are present: set ready_to_book=true and appointment_start_iso to a full ISO-8601 datetime in the clinic's local time (use the provided Now for relative dates like 'next Tuesday 2pm'). status='New'. Leave the final confirmation wording to the system, but you may write a brief 'let me check that time for you' reply.\n- If name+phone present but the date/time is vague/missing: ready_to_book=false, appointment_start_iso='', reply asks for a specific date and time.\n- notify_staff=true whenever name+phone are present. Compose email_subject and email_body as a concise internal staff note (name, phone, email, service, requested time, original message, recommended next action).\n- send_sms=true only when notify_staff is true; sms_body = short 'request received, not yet confirmed'.\nOutput JSON only."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "aptrow",
+      "name": "APT_BuildRow",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        140,
+        160
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ctx=$('Context Ready').item.json; const p=ctx.patient; const dec=$json.output??$json; const day=$now.format('yyyy-LL-dd');\nreturn {json:{ sheet_id:ctx.clinic.sheet_id, lead_key:`${ctx.clinic.clinic_id}|${p.phone||'nophone'}|appointment|${day}`, created_at:ctx.timestamp, session_id:ctx.session_id, patient_name:p.name, phone:p.phone, email:p.email, patient_type:p.patient_type, requested_service:p.service, preferred_date:p.preferred_date, preferred_time:p.preferred_time, urgency:ctx.urgency, status:dec.status||'Collecting', conversation_summary:(ctx.clinic.test_mode?'[TEST] ':'')+ctx.summary, staff_notified:!!dec.notify_staff, sms_sent:false, last_updated:$now.toISO() }};"
+      }
+    },
+    {
+      "id": "aptupsert",
+      "name": "APT_Upsert",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        380,
+        160
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Appointment_Requests"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [
+            "lead_key"
+          ],
+          "value": {}
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "aptbook",
+      "name": "APT_Book?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        620,
+        160
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ ($('APT_AI').item.json.output || $('APT_AI').item.json).ready_to_book }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "leftValue": "={{ ($('APT_AI').item.json.output || $('APT_AI').item.json).appointment_start_iso }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "aptfb",
+      "name": "APT_FreeBusy",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        860,
+        60
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "event",
+        "operation": "getAll",
+        "calendar": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Context Ready').item.json.clinic.clinic_calendar }}"
+        },
+        "returnAll": true,
+        "options": {
+          "timeMin": "={{ ($('APT_AI').item.json.output || $('APT_AI').item.json).appointment_start_iso }}",
+          "timeMax": "={{ DateTime.fromISO(($('APT_AI').item.json.output || $('APT_AI').item.json).appointment_start_iso).plus({minutes: $('Context Ready').item.json.clinic.appointment_duration_min}).toISO() }}"
+        }
+      },
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_ME_GCAL_CRED_ID",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "id": "aptslot",
+      "name": "APT_Slot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        60
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const ctx=$('Context Ready').first().json; const dec=$('APT_AI').first().json.output ?? $('APT_AI').first().json; const p=ctx.patient;\nconst start=dec.appointment_start_iso; const dur=ctx.clinic.appointment_duration_min||60;\nconst end=DateTime.fromISO(start).plus({minutes:dur}).toISO();\nconst events=$input.all().map(i=>i.json).filter(e=>e && (e.id||e.start));\nconst free=events.length===0;\nreturn [{json:{...ctx, _booking:{ start, end, free, summary:`(TENTATIVE) Dental appt - ${p.name}`, description:`Tentative booking via chatbot. Service: ${p.service||'-'}. Phone: ${p.phone||'-'}. Email: ${p.email||'-'}. NOT staff-confirmed.`, attendee:p.email||'' }}}];"
+      }
+    },
+    {
+      "id": "aptfree",
+      "name": "APT_Slot Free?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1340,
+        60
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json._booking.free }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "aptcreate",
+      "name": "APT_Create Event",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        1580,
+        -40
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "event",
+        "operation": "create",
+        "calendar": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Context Ready').item.json.clinic.clinic_calendar }}"
+        },
+        "start": "={{ $json._booking.start }}",
+        "end": "={{ $json._booking.end }}",
+        "additionalFields": {
+          "summary": "={{ $json._booking.summary }}",
+          "description": "={{ $json._booking.description }}"
+        }
+      },
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_ME_GCAL_CRED_ID",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "id": "aptbooked",
+      "name": "APT_Booked Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1820,
+        -40
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ctx=$('APT_Slot').first().json; const b=ctx._booking;\nconst when=DateTime.fromISO(b.start).toFormat('cccc, LLL d, t');\nconst reply=`Thanks! I've tentatively held ${when} for you. This is not yet a confirmed booking \\u2014 our team will review and confirm it shortly, and we'll be in touch if anything needs to change.`;\nconst c={...ctx}; delete c._booking; return {json:{...c, bot_response:reply}};"
+      }
+    },
+    {
+      "id": "aptunavail",
+      "name": "APT_Unavailable Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        160
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ctx=$('APT_Slot').first().json; const b=ctx._booking;\nconst when=DateTime.fromISO(b.start).toFormat('cccc, LLL d, t');\nconst reply=`I'm sorry \\u2014 ${when} isn't available. Could you share another date and time that works? I've also passed your request to our team, who can suggest openings.`;\nconst c={...ctx}; delete c._booking; return {json:{...c, bot_response:reply}};"
+      }
+    },
+    {
+      "id": "aptnotify",
+      "name": "APT_Notify?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        860,
+        320
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ ($('APT_AI').item.json.output || $('APT_AI').item.json).notify_staff }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "aptgmail",
+      "name": "APT_Gmail",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1100,
+        240
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $('Context Ready').item.json.clinic.staff_email }}",
+        "subject": "={{ ($('APT_AI').item.json.output || $('APT_AI').item.json).email_subject }}",
+        "emailType": "text",
+        "message": "={{ ($('APT_AI').item.json.output || $('APT_AI').item.json).email_body }}",
+        "options": {
+          "replyTo": "={{ $('Context Ready').item.json.patient.email || '' }}"
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_ME_GMAIL_CRED_ID",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "id": "aptsms",
+      "name": "APT_SMS?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1340,
+        240
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ ($('APT_AI').item.json.output || $('APT_AI').item.json).send_sms }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "leftValue": "={{ $('Context Ready').item.json.clinic.sms_enabled_patient }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "apttwilio",
+      "name": "APT_Twilio",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        1580,
+        320
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "sms",
+        "operation": "send",
+        "from": "={{ $('Context Ready').item.json.clinic.twilio_from }}",
+        "to": "={{ $('Context Ready').item.json.patient.phone }}",
+        "message": "={{ ($('APT_AI').item.json.output || $('APT_AI').item.json).sms_body }}",
+        "options": {}
+      },
+      "credentials": {
+        "twilioApi": {
+          "id": "REPLACE_ME_TWILIO_CRED_ID",
+          "name": "Twilio account"
+        }
+      }
+    },
+    {
+      "id": "aptret",
+      "name": "APT_Return",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1820,
+        320
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const dec=$('APT_AI').item.json.output ?? $('APT_AI').item.json;\nreturn {json:{...$('Context Ready').item.json, bot_response: dec.reply}};"
+      }
+    },
+    {
+      "id": "crparser",
+      "name": "CR_Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        -640
+      ],
+      "parameters": {
+        "schemaType": "fromJson",
+        "jsonSchemaExample": "{\n  \"reply\": \"\",\n  \"notify_staff\": true,\n  \"email_subject\": \"\",\n  \"email_body\": \"\",\n  \"send_sms\": false,\n  \"sms_body\": \"\",\n  \"status\": \"New\",\n  \"new_start_iso\": \"\"\n}"
+      }
+    },
+    {
+      "id": "crai",
+      "name": "CR_AI",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [
+        -120,
+        560
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "=Clinic: {{ $json.clinic.clinic_name }}\nNow (ISO): {{ $now.toISO() }}\nRequest intent: {{ $json.intent }}\nKnown patient details (JSON): {{ JSON.stringify($json.patient) }}\nConversation summary: {{ $json.summary }}\nLatest patient message: {{ $json.user_message }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are the CANCELLATION / RESCHEDULE handler for a dental clinic chatbot. The request intent is provided. You do NOT change the calendar yourself; a later step does, and the system decides whether staff must handle it (changes within the clinic's cutoff window are escalated). Output ONLY the JSON schema.\n\nHard rules:\n- Never say the appointment is already cancelled or rescheduled. Keep the reply neutral: 'we'll process your request'.\n- No medical advice. Warm, 2-3 sentences.\n\nExtraction:\n- For a reschedule with a concrete new date AND time, set new_start_iso to a full ISO-8601 datetime (use Now for relative dates). Otherwise new_start_iso=''.\n- notify_staff=true when name and a phone or email are present; compose email_subject/email_body as a concise staff note (request type, name, phone, email, existing appt info, new time if any, reason, original message).\n- send_sms=true only when notify_staff true; sms_body = short 'request received, not yet confirmed'.\n- status='New' when actionable, else 'Collecting'.\nOutput JSON only."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "crrow",
+      "name": "CR_BuildRow",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        140,
+        560
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ctx=$('Context Ready').item.json; const p=ctx.patient; const dec=$json.output??$json;\nconst reqType=ctx.intent==='reschedule_request'?'reschedule':'cancellation'; const day=$now.format('yyyy-LL-dd');\nreturn {json:{ sheet_id:ctx.clinic.sheet_id, lead_key:`${ctx.clinic.clinic_id}|${p.phone||p.email||'nocontact'}|${reqType}|${day}`, created_at:ctx.timestamp, session_id:ctx.session_id, patient_name:p.name, phone:p.phone, email:p.email, request_type:reqType, existing_appt_datetime:p.existing_appt_datetime, new_preferred_datetime:dec.new_start_iso||p.new_preferred_datetime, reason:p.reason, status:dec.status||'Collecting', staff_notified:!!dec.notify_staff, sms_sent:false, notes:(ctx.clinic.test_mode?'[TEST] ':'')+ctx.summary }};"
+      }
+    },
+    {
+      "id": "crupsert",
+      "name": "CR_Upsert",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        380,
+        560
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Cancellations_Reschedules"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [
+            "lead_key"
+          ],
+          "value": {}
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "crfind",
+      "name": "CR_Find Event",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        620,
+        560
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "event",
+        "operation": "getAll",
+        "calendar": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Context Ready').item.json.clinic.clinic_calendar }}"
+        },
+        "returnAll": true,
+        "options": {
+          "timeMin": "={{ $now.toISO() }}",
+          "timeMax": "={{ $now.plus({days:60}).toISO() }}"
+        }
+      },
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_ME_GCAL_CRED_ID",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "id": "crcompute",
+      "name": "CR_Compute",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        560
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const ctx=$('Context Ready').first().json; const p=ctx.patient; const dec=$('CR_AI').first().json.output ?? $('CR_AI').first().json;\nconst email=(p.email||'').toLowerCase(); const phone=(p.phone||'').replace(/\\D/g,'');\nconst events=$input.all().map(i=>i.json);\nlet match=null;\nfor(const e of events){ const att=JSON.stringify(e.attendees||'').toLowerCase(); const blob=`${e.summary||''} ${e.description||''}`.toLowerCase();\n  if(email && (att.includes(email)||blob.includes(email))){match=e;break;}\n  if(phone && blob.replace(/\\D/g,'').includes(phone)){match=e;break;} }\nconst cutoff=ctx.clinic.change_cutoff_hours||48;\nlet found=!!match, within=false, eventId='', startIso='';\nif(match){ startIso=(match.start&&(match.start.dateTime||match.start.date))||match.start||''; eventId=match.id||''; try{const hrs=DateTime.fromISO(startIso).diff($now,'hours').hours; within=hrs<cutoff;}catch(e){within=true;} }\nconst action=ctx.intent==='reschedule_request'?'reschedule':'cancellation';\nconst newStart=dec.new_start_iso||'';\nconst dur=ctx.clinic.appointment_duration_min||60;\nconst newEnd=newStart?DateTime.fromISO(newStart).plus({minutes:dur}).toISO():'';\nconst needsStaff = within || !found || (action==='reschedule' && !newStart);\nreturn [{json:{...ctx, _cr:{ found, within, needsStaff, eventId, startIso, action, newStart, newEnd }}}];"
+      }
+    },
+    {
+      "id": "crneeds",
+      "name": "CR_NeedsStaff?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1100,
+        560
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json._cr.needsStaff }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "crescprep",
+      "name": "CR_EscPrep",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        460
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const ctx=$('Context Ready').first().json; const cr=$('CR_Compute').first().json._cr; const p=ctx.patient;\nconst day=$now.format('yyyy-LL-dd');\nconst reasonTxt = cr.within ? `within ${ctx.clinic.change_cutoff_hours}h of the appointment` : (!cr.found ? 'appointment could not be located automatically' : 'missing new time for reschedule');\nconst _row={ sheet_id:ctx.clinic.sheet_id, lead_key:`${ctx.clinic.clinic_id}|${p.phone||p.email||'nocontact'}|${cr.action}_staff|${day}`, timestamp:ctx.timestamp, session_id:ctx.session_id, patient_name:p.name, phone:p.phone, email:p.email, issue_type:`${cr.action}_needs_staff`, urgency:cr.within?'high':'medium', summary:(ctx.clinic.test_mode?'[TEST] ':'')+`${cr.action} request \\u2014 ${reasonTxt}. ${ctx.summary||''}`, staff_notified:true, sms_sent:false, status:'New', notes:cr.startIso?`Existing appt: ${cr.startIso}`:'' };\nconst _email={ to:ctx.clinic.staff_email, subject:`[${ctx.clinic.clinic_name}] STAFF ACTION \\u2014 ${cr.action} (${reasonTxt}) \\u2014 ${p.name}`, body:(ctx.clinic.test_mode?'[TEST MODE]\\n':'')+`A ${cr.action} request needs staff handling because it is ${reasonTxt}.\\n\\nPatient: ${p.name}\\nPhone: ${p.phone||'-'}\\nEmail: ${p.email||'-'}\\nExisting appointment: ${cr.startIso||'not found'}\\nRequested new time: ${cr.newStart||'-'}\\nOriginal message: \"${ctx.user_message}\"\\n\\nPlease action in the calendar and contact the patient.`, reply_to:p.email||'' };\nconst reply = cr.within ? `Thanks ${p.first_name||''}. Because your appointment is within ${ctx.clinic.change_cutoff_hours} hours, our team will handle this change directly and confirm with you shortly.` : `Thanks ${p.first_name||''}. I've passed your request to our team, who will take care of it and confirm with you shortly.`;\nreturn [{json:{...ctx, _row, _email, _reply:reply}}];"
+      }
+    },
+    {
+      "id": "crescshape",
+      "name": "CR_EscShape",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        380
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: $('CR_EscPrep').first().json._row };"
+      }
+    },
+    {
+      "id": "crescsheets",
+      "name": "CR_EscSheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1820,
+        380
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Escalations"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "crescmailshape",
+      "name": "CR_EscMailShape",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        540
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: $('CR_EscPrep').first().json._email };"
+      }
+    },
+    {
+      "id": "crescmail",
+      "name": "CR_EscEmail",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1820,
+        540
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $json.to }}",
+        "subject": "={{ $json.subject }}",
+        "emailType": "text",
+        "message": "={{ $json.body }}",
+        "options": {
+          "replyTo": "={{ $json.reply_to || '' }}"
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_ME_GMAIL_CRED_ID",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "id": "crescreply",
+      "name": "CR_EscReply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2060,
+        460
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return {json:{...$('Context Ready').item.json, bot_response: $('CR_EscPrep').first().json._reply}};"
+      }
+    },
+    {
+      "id": "craction",
+      "name": "CR_Action?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1340,
+        700
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json._cr.action }}",
+              "rightValue": "cancellation",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "crdelete",
+      "name": "CR_Delete Event",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        1580,
+        700
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "event",
+        "operation": "delete",
+        "calendar": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Context Ready').item.json.clinic.clinic_calendar }}"
+        },
+        "eventId": "={{ $('CR_Compute').first().json._cr.eventId }}",
+        "options": {}
+      },
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_ME_GCAL_CRED_ID",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "id": "crcancelreply",
+      "name": "CR_Cancel Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1820,
+        700
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ctx=$('Context Ready').item.json; const cr=$('CR_Compute').first().json._cr;\nconst when=cr.startIso?DateTime.fromISO(cr.startIso).toFormat('cccc, LLL d, t'):'your appointment';\nreturn {json:{...ctx, bot_response:`Done \\u2014 I've cancelled ${when}. If that's not what you wanted, let me know and I'll flag it to our team.`}};"
+      }
+    },
+    {
+      "id": "crupdate",
+      "name": "CR_Update Event",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        1580,
+        860
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "resource": "event",
+        "operation": "update",
+        "calendar": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Context Ready').item.json.clinic.clinic_calendar }}"
+        },
+        "eventId": "={{ $('CR_Compute').first().json._cr.eventId }}",
+        "updateFields": {
+          "start": "={{ $('CR_Compute').first().json._cr.newStart }}",
+          "end": "={{ $('CR_Compute').first().json._cr.newEnd }}"
+        }
+      },
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_ME_GCAL_CRED_ID",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "id": "crreschedreply",
+      "name": "CR_Reschedule Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1820,
+        860
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ctx=$('Context Ready').item.json; const cr=$('CR_Compute').first().json._cr;\nconst when=cr.newStart?DateTime.fromISO(cr.newStart).toFormat('cccc, LLL d, t'):'the new time';\nreturn {json:{...ctx, bot_response:`Done \\u2014 I've moved your appointment to ${when} (tentatively). Our team will confirm; let us know if anything's off.`}};"
+      }
+    }
+  ],
+  "connections": {
+    "Chat Trigger": {
+      "main": [
+        [
+          {
+            "node": "Load Clinic Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Clinic Config": {
+      "main": [
+        [
+          {
+            "node": "Classify + Extract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classifier Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Classify + Extract",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "Classify + Extract",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classifier Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Classify + Extract",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify + Extract": {
+      "main": [
+        [
+          {
+            "node": "Build Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Context": {
+      "main": [
+        [
+          {
+            "node": "Read Patient Records",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route By Intent": {
+      "main": [
+        [
+          {
+            "node": "Pinecone Vector Store",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "APT_AI",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CR_AI",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "EMG_AI",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HO_AI",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Unknown \u2192 Clarify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handler Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "APT_AI",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "CR_AI",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "EMG_AI",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "HO_AI",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "FAQ_AI",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handler Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "EMG_AI",
+            "type": "ai_outputParser",
+            "index": 0
+          },
+          {
+            "node": "HO_AI",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FAQ Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "FAQ_AI",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings OpenAI": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Pinecone Vector Store",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pinecone Vector Store": {
+      "main": [
+        [
+          {
+            "node": "FAQ_Extract Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FAQ_Extract Chunks": {
+      "main": [
+        [
+          {
+            "node": "FAQ_AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FAQ_AI": {
+      "main": [
+        [
+          {
+            "node": "FAQ_Apply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FAQ_Apply": {
+      "main": [
+        [
+          {
+            "node": "FAQ_Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FAQ_Found?": {
+      "main": [
+        [
+          {
+            "node": "Assemble Final",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "FAQ_UnRow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FAQ_UnRow": {
+      "main": [
+        [
+          {
+            "node": "FAQ_Log Unanswered",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FAQ_Log Unanswered": {
+      "main": [
+        [
+          {
+            "node": "FAQ_Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FAQ_Return": {
+      "main": [
+        [
+          {
+            "node": "Assemble Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EMG_AI": {
+      "main": [
+        [
+          {
+            "node": "EMG_BuildRow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EMG_BuildRow": {
+      "main": [
+        [
+          {
+            "node": "EMG_Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EMG_Upsert": {
+      "main": [
+        [
+          {
+            "node": "EMG_Gmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EMG_Gmail": {
+      "main": [
+        [
+          {
+            "node": "EMG_SMS?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EMG_SMS?": {
+      "main": [
+        [
+          {
+            "node": "EMG_Twilio",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "EMG_Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EMG_Twilio": {
+      "main": [
+        [
+          {
+            "node": "EMG_Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EMG_Return": {
+      "main": [
+        [
+          {
+            "node": "Assemble Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HO_AI": {
+      "main": [
+        [
+          {
+            "node": "HO_BuildRow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HO_BuildRow": {
+      "main": [
+        [
+          {
+            "node": "HO_Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HO_Upsert": {
+      "main": [
+        [
+          {
+            "node": "HO_Notify?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HO_Notify?": {
+      "main": [
+        [
+          {
+            "node": "HO_Gmail",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HO_Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HO_Gmail": {
+      "main": [
+        [
+          {
+            "node": "HO_SMS?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HO_SMS?": {
+      "main": [
+        [
+          {
+            "node": "HO_Twilio",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HO_Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HO_Twilio": {
+      "main": [
+        [
+          {
+            "node": "HO_Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HO_Return": {
+      "main": [
+        [
+          {
+            "node": "Assemble Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unknown \u2192 Clarify": {
+      "main": [
+        [
+          {
+            "node": "Assemble Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assemble Final": {
+      "main": [
+        [
+          {
+            "node": "Log Conversation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Conversation": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run KB Ingestion": {
+      "main": [
+        [
+          {
+            "node": "Ingestion Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ingestion Config": {
+      "main": [
+        [
+          {
+            "node": "List Files In Folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Files In Folder": {
+      "main": [
+        [
+          {
+            "node": "Download File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download File": {
+      "main": [
+        [
+          {
+            "node": "Prep Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prep Metadata": {
+      "main": [
+        [
+          {
+            "node": "Pinecone \u2014 Insert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings OpenAI (KB)": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Pinecone \u2014 Insert",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Default Data Loader": {
+      "ai_document": [
+        [
+          {
+            "node": "Pinecone \u2014 Insert",
+            "type": "ai_document",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recursive Text Splitter": {
+      "ai_textSplitter": [
+        [
+          {
+            "node": "Default Data Loader",
+            "type": "ai_textSplitter",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every Hour": {
+      "main": [
+        [
+          {
+            "node": "Reminder Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reminder Config": {
+      "main": [
+        [
+          {
+            "node": "Read Appointment Requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Appointment Requests": {
+      "main": [
+        [
+          {
+            "node": "Find Stale New Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Stale New Leads": {
+      "main": [
+        [
+          {
+            "node": "Any Stale?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Stale?": {
+      "main": [
+        [
+          {
+            "node": "Email Staff Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Read Patient Records": {
+      "main": [
+        [
+          {
+            "node": "Match Patient",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match Patient": {
+      "main": [
+        [
+          {
+            "node": "Has Contact?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Contact?": {
+      "main": [
+        [
+          {
+            "node": "Shape Record",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Context Ready",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape Record": {
+      "main": [
+        [
+          {
+            "node": "Upsert Patient Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Patient Record": {
+      "main": [
+        [
+          {
+            "node": "Context Ready",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Context Ready": {
+      "main": [
+        [
+          {
+            "node": "Route By Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "APT_AI": {
+      "main": [
+        [
+          {
+            "node": "APT_BuildRow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "APT_BuildRow": {
+      "main": [
+        [
+          {
+            "node": "APT_Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "APT_Upsert": {
+      "main": [
+        [
+          {
+            "node": "APT_Book?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "APT_Book?": {
+      "main": [
+        [
+          {
+            "node": "APT_FreeBusy",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "APT_Notify?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "APT_FreeBusy": {
+      "main": [
+        [
+          {
+            "node": "APT_Slot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "APT_Slot": {
+      "main": [
+        [
+          {
+            "node": "APT_Slot Free?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "APT_Slot Free?": {
+      "main": [
+        [
+          {
+            "node": "APT_Create Event",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "APT_Unavailable Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "APT_Create Event": {
+      "main": [
+        [
+          {
+            "node": "APT_Booked Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "APT_Booked Reply": {
+      "main": [
+        [
+          {
+            "node": "Assemble Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "APT_Unavailable Reply": {
+      "main": [
+        [
+          {
+            "node": "Assemble Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "APT_Notify?": {
+      "main": [
+        [
+          {
+            "node": "APT_Gmail",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "APT_Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "APT_Gmail": {
+      "main": [
+        [
+          {
+            "node": "APT_SMS?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "APT_SMS?": {
+      "main": [
+        [
+          {
+            "node": "APT_Twilio",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "APT_Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "APT_Twilio": {
+      "main": [
+        [
+          {
+            "node": "APT_Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "APT_Return": {
+      "main": [
+        [
+          {
+            "node": "Assemble Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "APT_Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "APT_AI",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_AI": {
+      "main": [
+        [
+          {
+            "node": "CR_BuildRow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_BuildRow": {
+      "main": [
+        [
+          {
+            "node": "CR_Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_Upsert": {
+      "main": [
+        [
+          {
+            "node": "CR_Find Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_Find Event": {
+      "main": [
+        [
+          {
+            "node": "CR_Compute",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_Compute": {
+      "main": [
+        [
+          {
+            "node": "CR_NeedsStaff?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_NeedsStaff?": {
+      "main": [
+        [
+          {
+            "node": "CR_EscPrep",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CR_Action?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_EscPrep": {
+      "main": [
+        [
+          {
+            "node": "CR_EscShape",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_EscShape": {
+      "main": [
+        [
+          {
+            "node": "CR_EscSheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_EscSheets": {
+      "main": [
+        [
+          {
+            "node": "CR_EscMailShape",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_EscMailShape": {
+      "main": [
+        [
+          {
+            "node": "CR_EscEmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_EscEmail": {
+      "main": [
+        [
+          {
+            "node": "CR_EscReply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_EscReply": {
+      "main": [
+        [
+          {
+            "node": "Assemble Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_Action?": {
+      "main": [
+        [
+          {
+            "node": "CR_Delete Event",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CR_Update Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_Delete Event": {
+      "main": [
+        [
+          {
+            "node": "CR_Cancel Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_Cancel Reply": {
+      "main": [
+        [
+          {
+            "node": "Assemble Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_Update Event": {
+      "main": [
+        [
+          {
+            "node": "CR_Reschedule Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_Reschedule Reply": {
+      "main": [
+        [
+          {
+            "node": "Assemble Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CR_Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "CR_AI",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
