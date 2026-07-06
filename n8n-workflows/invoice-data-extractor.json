@@ -1,0 +1,683 @@
+{
+  "name": "Invoice Data Extractor (Gmail → OpenAI → Drive + Sheets)",
+  "nodes": [
+    {
+      "id": "note-setup",
+      "name": "📋 SETUP INSTRUCTIONS",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-480, -520],
+      "parameters": {
+        "width": 760,
+        "height": 480,
+        "color": 4,
+        "content": "## Before you run this\n\n1. **Credentials** — create/select in each node:\n   - Gmail OAuth2 (Trigger + Label node)\n   - OpenAI API (HTTP Request node, \"Predefined Credential Type\")\n   - Google Drive OAuth2 (Upload node)\n   - Google Sheets OAuth2 (all Sheets nodes)\n\n2. **Gmail label** — create a label e.g. `Automation/Processed` in Gmail, then paste its Label ID into the \"Gmail – Label As Processing\" node. This + the trigger's search query (`-label:automation-processed`) stops the same email being processed twice.\n\n3. **Google Drive folder** — create an \"Invoices\" folder, copy its folder ID into \"Upload Original PDF To Drive\".\n\n4. **Google Sheet** — create one spreadsheet with 4 tabs, headers in row 1:\n   - `Invoices`: invoice_key, invoice_number, vendor_name, vendor_address, invoice_date, due_date, currency, subtotal, tax_amount, total_amount, po_number, page_range, line_items_json, source_email_subject, source_email_from, source_attachment_filename, drive_file_id, drive_file_url, processed_at\n   - `LineItems`: line_key, invoice_key, invoice_number, vendor_name, line_no, description, quantity, unit_price, line_total\n   - `SkippedFiles`: timestamp, email_id, from, subject, attachment_filename, reason, detail\n   - `Errors`: timestamp, stage, email_id, subject, attachment_filename, error_message\n   Paste the Spreadsheet ID into every Google Sheets node (documentId).\n\n5. Model used is `gpt-4.1` via the OpenAI **Responses API** (supports PDF input natively, no image conversion needed). Swap the model string in \"Build OpenAI Request Payload\" if you prefer `gpt-4o`.\n\n### How complications are handled\n- **Multiple invoices in one PDF** → the AI returns an `invoices[]` array with page ranges; \"Split Out Individual Invoices\" fans them out.\n- **Line items** → extracted per invoice, then flattened into their own Sheet rows via \"Flatten Line Items\".\n- **Saving to Drive** → original PDF uploaded once per attachment (not once per invoice), before the fan-out.\n- **PDF that isn't an invoice** → AI classifies first; non-invoices are logged to `SkippedFiles`, not processed further.\n- **One email, multiple invoices** → \"Split Email Attachments\" already emits one branch per attachment, and each branch can itself yield multiple invoices — both axes are covered.\n- **Duplicates on re-run** → Sheets writes use \"Append or Update\" keyed on `invoice_key` / `line_key`, so re-processing the same invoice overwrites instead of duplicating."
+      }
+    },
+    {
+      "id": "note-ingest",
+      "name": "1) INGEST",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-480, 40],
+      "parameters": {
+        "width": 620,
+        "height": 260,
+        "color": 5,
+        "content": "### 1) Ingest\nPoll Gmail → split each email into one item per attachment → keep PDFs only. Non-PDF attachments are logged and dropped here."
+      }
+    },
+    {
+      "id": "note-ai",
+      "name": "2) AI CLASSIFY + EXTRACT",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 40],
+      "parameters": {
+        "width": 620,
+        "height": 260,
+        "color": 6,
+        "content": "### 2) Classify + Extract\nOne OpenAI call per PDF. The model decides if it's an invoice, and if the PDF contains several invoices concatenated together it returns each one separately with its own page range and line items."
+      }
+    },
+    {
+      "id": "note-store",
+      "name": "3) STORE + FAN OUT",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [900, 40],
+      "parameters": {
+        "width": 700,
+        "height": 320,
+        "color": 3,
+        "content": "### 3) Store file, then fan out per invoice\nThe original PDF is uploaded to Drive exactly once. Then the `invoices[]` array is split so each invoice (and each of its line items) gets its own Sheets row, all pointing back at the same Drive file."
+      }
+    },
+    {
+      "id": "note-skip",
+      "name": "4) SKIP + ERROR HANDLING",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 420],
+      "parameters": {
+        "width": 820,
+        "height": 260,
+        "color": 2,
+        "content": "### 4) Skip & error handling\nNon-invoices, non-PDFs and JSON-parse failures are logged to `SkippedFiles`. Any node failure (OpenAI call, Drive upload, Sheets write) is caught via its error output and logged to `Errors` instead of stopping the whole run."
+      }
+    },
+    {
+      "id": "gmail-trigger",
+      "name": "Gmail Trigger – New Mail With Attachment",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.2,
+      "position": [-460, 120],
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            { "mode": "everyMinute" }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "q": "has:attachment -label:automation-processed"
+        },
+        "format": "resolved",
+        "downloadAttachments": true,
+        "options": {}
+      },
+      "credentials": {
+        "gmailOAuth2": { "id": "REPLACE_ME_GMAIL_CRED_ID", "name": "Gmail account" }
+      }
+    },
+    {
+      "id": "gmail-label",
+      "name": "Gmail – Label As Processing",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [-200, -60],
+      "parameters": {
+        "resource": "message",
+        "operation": "addLabels",
+        "messageId": "={{ $json.id }}",
+        "labelIds": ["REPLACE_ME_GMAIL_LABEL_ID"]
+      },
+      "credentials": {
+        "gmailOAuth2": { "id": "REPLACE_ME_GMAIL_CRED_ID", "name": "Gmail account" }
+      }
+    },
+    {
+      "id": "split-attachments",
+      "name": "Split Email Attachments",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-200, 160],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const output = [];\n\nfor (const item of $input.all()) {\n  const headers = item.json.payload?.headers || [];\n  const getHeader = (name) => headers.find(h => (h.name || '').toLowerCase() === name.toLowerCase())?.value || '';\n\n  const emailMeta = {\n    emailId: item.json.id,\n    threadId: item.json.threadId,\n    subject: getHeader('Subject'),\n    from: getHeader('From'),\n    date: getHeader('Date'),\n  };\n\n  const binaryKeys = Object.keys(item.binary || {});\n\n  if (binaryKeys.length === 0) {\n    continue;\n  }\n\n  for (const key of binaryKeys) {\n    const bin = item.binary[key];\n    const mimeType = (bin.mimeType || '').toLowerCase();\n    const fileExtension = (bin.fileExtension || '').toLowerCase();\n    const isPdf = mimeType.includes('pdf') || fileExtension === 'pdf';\n\n    output.push({\n      json: {\n        ...emailMeta,\n        attachmentKey: key,\n        attachmentFilename: bin.fileName || `${key}.bin`,\n        mimeType: bin.mimeType,\n        isPdf,\n      },\n      binary: {\n        data: bin,\n      },\n    });\n  }\n}\n\nreturn output;"
+      }
+    },
+    {
+      "id": "filter-pdf",
+      "name": "Keep PDF Attachments Only",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [40, 160],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.isPdf }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "tag-skip-nonpdf",
+      "name": "Tag Skip Reason – Non-PDF",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [40, 340],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return {\n  json: {\n    ...$json,\n    reason: 'non-pdf-attachment',\n    detail: `Attachment mime type was ${$json.mimeType}`,\n  }\n};"
+      }
+    },
+    {
+      "id": "build-openai-payload",
+      "name": "Build OpenAI Request Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [280, 160],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const base64 = $binary.data.data;\n\nconst prompt = `You are an expert accounts-payable clerk reviewing a PDF file extracted from an email attachment.\\n\\nSTEP 1 - CLASSIFY: Decide if this PDF is a genuine INVOICE or BILL (a document requesting payment for goods/services, containing a total amount due). It is NOT an invoice if it is a receipt/payment-confirmation, purchase order, quote/estimate, delivery note, contract, marketing flyer, or an unrelated document. Set \"is_invoice\" accordingly and briefly explain why in \"reason\".\\n\\nSTEP 2 - HANDLE MULTIPLE INVOICES: A single PDF may contain more than one separate invoice concatenated together (e.g. a monthly batch export from a vendor). Treat each invoice as a separate entry in the \"invoices\" array, and record the 1-based page range (\"page_start\", \"page_end\") each invoice occupies within the PDF.\\n\\nSTEP 3 - EXTRACT: For every invoice found, extract every header field and EVERY line item exactly as printed - do not summarize, merge, or omit any row from the line item table, even if there are many. If a field is not printed on the document, return an empty string for text fields or 0 for numeric fields. Return all monetary amounts as plain numbers (no currency symbols, no thousands separators).\\n\\nOnly output valid JSON matching the provided schema.`;\n\nconst lineItemSchema = {\n  type: 'object',\n  properties: {\n    description: { type: 'string' },\n    quantity: { type: 'number' },\n    unit_price: { type: 'number' },\n    line_total: { type: 'number' },\n  },\n  required: ['description', 'quantity', 'unit_price', 'line_total'],\n  additionalProperties: false,\n};\n\nconst invoiceSchema = {\n  type: 'object',\n  properties: {\n    invoice_number: { type: 'string' },\n    vendor_name: { type: 'string' },\n    vendor_address: { type: 'string' },\n    invoice_date: { type: 'string' },\n    due_date: { type: 'string' },\n    currency: { type: 'string' },\n    subtotal: { type: 'number' },\n    tax_amount: { type: 'number' },\n    total_amount: { type: 'number' },\n    po_number: { type: 'string' },\n    page_start: { type: 'integer' },\n    page_end: { type: 'integer' },\n    line_items: { type: 'array', items: lineItemSchema },\n  },\n  required: ['invoice_number', 'vendor_name', 'vendor_address', 'invoice_date', 'due_date', 'currency', 'subtotal', 'tax_amount', 'total_amount', 'po_number', 'page_start', 'page_end', 'line_items'],\n  additionalProperties: false,\n};\n\nconst schema = {\n  type: 'object',\n  properties: {\n    is_invoice: { type: 'boolean' },\n    reason: { type: 'string' },\n    invoice_count: { type: 'integer' },\n    invoices: { type: 'array', items: invoiceSchema },\n  },\n  required: ['is_invoice', 'reason', 'invoice_count', 'invoices'],\n  additionalProperties: false,\n};\n\nconst requestBody = {\n  model: 'gpt-4.1',\n  input: [\n    {\n      role: 'user',\n      content: [\n        { type: 'input_text', text: prompt },\n        { type: 'input_file', filename: $json.attachmentFilename || 'document.pdf', file_data: `data:application/pdf;base64,${base64}` },\n      ],\n    },\n  ],\n  text: {\n    format: {\n      type: 'json_schema',\n      name: 'invoice_extraction',\n      strict: true,\n      schema,\n    },\n  },\n};\n\nreturn {\n  json: { ...$json, requestBody },\n  binary: $binary,\n};"
+      }
+    },
+    {
+      "id": "openai-extract",
+      "name": "OpenAI – Classify & Extract Invoices",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [520, 160],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/responses",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.requestBody }}",
+        "options": { "timeout": 180000 }
+      },
+      "credentials": {
+        "openAiApi": { "id": "REPLACE_ME_OPENAI_CRED_ID", "name": "OpenAi account" }
+      }
+    },
+    {
+      "id": "parse-ai-response",
+      "name": "Parse AI JSON Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [760, 160],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const response = $json;\nconst original = $('Build OpenAI Request Payload').item.json;\n\nlet aiResult = null;\nlet parseError = null;\nlet rawText = '';\n\ntry {\n  rawText = response.output_text ?? response.output?.[0]?.content?.[0]?.text ?? '';\n  aiResult = JSON.parse(rawText);\n} catch (e) {\n  parseError = e.message;\n}\n\nreturn {\n  json: {\n    emailId: original.emailId,\n    threadId: original.threadId,\n    subject: original.subject,\n    from: original.from,\n    attachmentFilename: original.attachmentFilename,\n    aiResult,\n    parseError,\n    rawText: parseError ? String(rawText).slice(0, 2000) : undefined,\n  },\n  binary: $('Build OpenAI Request Payload').item.binary,\n};"
+      }
+    },
+    {
+      "id": "if-parse-ok",
+      "name": "Parse OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1000, 160],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.parseError }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "empty", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "tag-skip-parse-error",
+      "name": "Tag Skip Reason – Parse Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 420],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return {\n  json: {\n    ...$json,\n    reason: 'ai-parse-error',\n    detail: $json.parseError,\n  }\n};"
+      }
+    },
+    {
+      "id": "if-is-invoice",
+      "name": "Is Invoice?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1240, 160],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.aiResult.is_invoice }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+            },
+            {
+              "leftValue": "={{ $json.aiResult.invoice_count }}",
+              "rightValue": 0,
+              "operator": { "type": "number", "operation": "gt" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "tag-skip-not-invoice",
+      "name": "Tag Skip Reason – Not An Invoice",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1240, 420],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return {\n  json: {\n    ...$json,\n    reason: 'not-an-invoice',\n    detail: $json.aiResult?.reason || '',\n  }\n};"
+      }
+    },
+    {
+      "id": "log-skipped-file",
+      "name": "Log Skipped File",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1480, 420],
+      "parameters": {
+        "operation": "append",
+        "documentId": { "__rl": true, "mode": "id", "value": "REPLACE_ME_SPREADSHEET_ID" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "SkippedFiles" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $now.toISO() }}",
+            "email_id": "={{ $json.emailId }}",
+            "from": "={{ $json.from }}",
+            "subject": "={{ $json.subject }}",
+            "attachment_filename": "={{ $json.attachmentFilename }}",
+            "reason": "={{ $json.reason }}",
+            "detail": "={{ $json.detail }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "timestamp", "displayName": "timestamp", "type": "string", "canBeUsedToMatch": true },
+            { "id": "email_id", "displayName": "email_id", "type": "string", "canBeUsedToMatch": true },
+            { "id": "from", "displayName": "from", "type": "string", "canBeUsedToMatch": true },
+            { "id": "subject", "displayName": "subject", "type": "string", "canBeUsedToMatch": true },
+            { "id": "attachment_filename", "displayName": "attachment_filename", "type": "string", "canBeUsedToMatch": true },
+            { "id": "reason", "displayName": "reason", "type": "string", "canBeUsedToMatch": true },
+            { "id": "detail", "displayName": "detail", "type": "string", "canBeUsedToMatch": true }
+          ]
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "REPLACE_ME_SHEETS_CRED_ID", "name": "Google Sheets account" }
+      }
+    },
+    {
+      "id": "drive-upload",
+      "name": "Upload Original PDF To Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1480, 160],
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "resource": "file",
+        "operation": "upload",
+        "name": "={{ $json.attachmentFilename }}",
+        "driveId": { "__rl": true, "mode": "list", "value": "My Drive" },
+        "folderId": { "__rl": true, "mode": "id", "value": "REPLACE_ME_DRIVE_FOLDER_ID" },
+        "binaryData": true,
+        "binaryPropertyName": "data",
+        "options": {}
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": { "id": "REPLACE_ME_DRIVE_CRED_ID", "name": "Google Drive account" }
+      }
+    },
+    {
+      "id": "combine-drive-ai",
+      "name": "Combine Drive Info + AI Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1720, 160],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const driveOut = $json;\nconst aiData = $('Is Invoice?').item.json;\n\nreturn {\n  json: {\n    emailId: aiData.emailId,\n    subject: aiData.subject,\n    from: aiData.from,\n    attachmentFilename: aiData.attachmentFilename,\n    driveFileId: driveOut.id,\n    driveFileUrl: driveOut.webViewLink,\n    invoices: aiData.aiResult.invoices,\n  }\n};"
+      }
+    },
+    {
+      "id": "split-invoices",
+      "name": "Split Out Individual Invoices",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [1960, 160],
+      "parameters": {
+        "fieldToSplitOut": "invoices",
+        "destinationFieldName": "invoice",
+        "include": "allOtherFields",
+        "options": {}
+      }
+    },
+    {
+      "id": "build-invoice-fields",
+      "name": "Build Invoice Summary Fields",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 160],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $json;\nconst inv = item.invoice;\nconst invoiceKey = `${(inv.vendor_name || '').trim().toLowerCase()}::${(inv.invoice_number || '').trim().toLowerCase()}`;\n\nreturn {\n  json: {\n    invoice_key: invoiceKey,\n    invoice_number: inv.invoice_number,\n    vendor_name: inv.vendor_name,\n    vendor_address: inv.vendor_address,\n    invoice_date: inv.invoice_date,\n    due_date: inv.due_date,\n    currency: inv.currency,\n    subtotal: inv.subtotal,\n    tax_amount: inv.tax_amount,\n    total_amount: inv.total_amount,\n    po_number: inv.po_number,\n    page_range: `${inv.page_start ?? ''}-${inv.page_end ?? ''}`,\n    line_items: inv.line_items || [],\n    line_items_json: JSON.stringify(inv.line_items || []),\n    source_email_subject: item.subject,\n    source_email_from: item.from,\n    source_attachment_filename: item.attachmentFilename,\n    drive_file_id: item.driveFileId,\n    drive_file_url: item.driveFileUrl,\n    processed_at: $now.toISO(),\n  }\n};"
+      }
+    },
+    {
+      "id": "upsert-invoice",
+      "name": "Upsert Invoice Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [2440, 60],
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": { "__rl": true, "mode": "id", "value": "REPLACE_ME_SPREADSHEET_ID" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "Invoices" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "invoice_key": "={{ $json.invoice_key }}",
+            "invoice_number": "={{ $json.invoice_number }}",
+            "vendor_name": "={{ $json.vendor_name }}",
+            "vendor_address": "={{ $json.vendor_address }}",
+            "invoice_date": "={{ $json.invoice_date }}",
+            "due_date": "={{ $json.due_date }}",
+            "currency": "={{ $json.currency }}",
+            "subtotal": "={{ $json.subtotal }}",
+            "tax_amount": "={{ $json.tax_amount }}",
+            "total_amount": "={{ $json.total_amount }}",
+            "po_number": "={{ $json.po_number }}",
+            "page_range": "={{ $json.page_range }}",
+            "line_items_json": "={{ $json.line_items_json }}",
+            "source_email_subject": "={{ $json.source_email_subject }}",
+            "source_email_from": "={{ $json.source_email_from }}",
+            "source_attachment_filename": "={{ $json.source_attachment_filename }}",
+            "drive_file_id": "={{ $json.drive_file_id }}",
+            "drive_file_url": "={{ $json.drive_file_url }}",
+            "processed_at": "={{ $json.processed_at }}"
+          },
+          "matchingColumns": ["invoice_key"],
+          "schema": [
+            { "id": "invoice_key", "displayName": "invoice_key", "type": "string", "canBeUsedToMatch": true, "defaultMatch": true },
+            { "id": "invoice_number", "displayName": "invoice_number", "type": "string", "canBeUsedToMatch": true },
+            { "id": "vendor_name", "displayName": "vendor_name", "type": "string", "canBeUsedToMatch": true },
+            { "id": "vendor_address", "displayName": "vendor_address", "type": "string", "canBeUsedToMatch": true },
+            { "id": "invoice_date", "displayName": "invoice_date", "type": "string", "canBeUsedToMatch": true },
+            { "id": "due_date", "displayName": "due_date", "type": "string", "canBeUsedToMatch": true },
+            { "id": "currency", "displayName": "currency", "type": "string", "canBeUsedToMatch": true },
+            { "id": "subtotal", "displayName": "subtotal", "type": "number", "canBeUsedToMatch": true },
+            { "id": "tax_amount", "displayName": "tax_amount", "type": "number", "canBeUsedToMatch": true },
+            { "id": "total_amount", "displayName": "total_amount", "type": "number", "canBeUsedToMatch": true },
+            { "id": "po_number", "displayName": "po_number", "type": "string", "canBeUsedToMatch": true },
+            { "id": "page_range", "displayName": "page_range", "type": "string", "canBeUsedToMatch": true },
+            { "id": "line_items_json", "displayName": "line_items_json", "type": "string", "canBeUsedToMatch": true },
+            { "id": "source_email_subject", "displayName": "source_email_subject", "type": "string", "canBeUsedToMatch": true },
+            { "id": "source_email_from", "displayName": "source_email_from", "type": "string", "canBeUsedToMatch": true },
+            { "id": "source_attachment_filename", "displayName": "source_attachment_filename", "type": "string", "canBeUsedToMatch": true },
+            { "id": "drive_file_id", "displayName": "drive_file_id", "type": "string", "canBeUsedToMatch": true },
+            { "id": "drive_file_url", "displayName": "drive_file_url", "type": "string", "canBeUsedToMatch": true },
+            { "id": "processed_at", "displayName": "processed_at", "type": "string", "canBeUsedToMatch": true }
+          ]
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "REPLACE_ME_SHEETS_CRED_ID", "name": "Google Sheets account" }
+      }
+    },
+    {
+      "id": "flatten-line-items",
+      "name": "Flatten Line Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2440, 280],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const output = [];\n\nfor (const item of $input.all()) {\n  const inv = item.json;\n  const items = inv.line_items || [];\n\n  items.forEach((li, idx) => {\n    output.push({\n      json: {\n        line_key: `${inv.invoice_key}::${idx + 1}`,\n        invoice_key: inv.invoice_key,\n        invoice_number: inv.invoice_number,\n        vendor_name: inv.vendor_name,\n        line_no: idx + 1,\n        description: li.description,\n        quantity: li.quantity,\n        unit_price: li.unit_price,\n        line_total: li.line_total,\n      },\n    });\n  });\n}\n\nreturn output;"
+      }
+    },
+    {
+      "id": "upsert-line-item",
+      "name": "Upsert Line Item Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [2680, 280],
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": { "__rl": true, "mode": "id", "value": "REPLACE_ME_SPREADSHEET_ID" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "LineItems" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "line_key": "={{ $json.line_key }}",
+            "invoice_key": "={{ $json.invoice_key }}",
+            "invoice_number": "={{ $json.invoice_number }}",
+            "vendor_name": "={{ $json.vendor_name }}",
+            "line_no": "={{ $json.line_no }}",
+            "description": "={{ $json.description }}",
+            "quantity": "={{ $json.quantity }}",
+            "unit_price": "={{ $json.unit_price }}",
+            "line_total": "={{ $json.line_total }}"
+          },
+          "matchingColumns": ["line_key"],
+          "schema": [
+            { "id": "line_key", "displayName": "line_key", "type": "string", "canBeUsedToMatch": true, "defaultMatch": true },
+            { "id": "invoice_key", "displayName": "invoice_key", "type": "string", "canBeUsedToMatch": true },
+            { "id": "invoice_number", "displayName": "invoice_number", "type": "string", "canBeUsedToMatch": true },
+            { "id": "vendor_name", "displayName": "vendor_name", "type": "string", "canBeUsedToMatch": true },
+            { "id": "line_no", "displayName": "line_no", "type": "number", "canBeUsedToMatch": true },
+            { "id": "description", "displayName": "description", "type": "string", "canBeUsedToMatch": true },
+            { "id": "quantity", "displayName": "quantity", "type": "number", "canBeUsedToMatch": true },
+            { "id": "unit_price", "displayName": "unit_price", "type": "number", "canBeUsedToMatch": true },
+            { "id": "line_total", "displayName": "line_total", "type": "number", "canBeUsedToMatch": true }
+          ]
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "REPLACE_ME_SHEETS_CRED_ID", "name": "Google Sheets account" }
+      }
+    },
+    {
+      "id": "log-error-ai",
+      "name": "Log Error – AI Extraction Failed",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [760, 420],
+      "parameters": {
+        "operation": "append",
+        "documentId": { "__rl": true, "mode": "id", "value": "REPLACE_ME_SPREADSHEET_ID" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "Errors" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $now.toISO() }}",
+            "stage": "openai-extraction",
+            "email_id": "={{ $('Build OpenAI Request Payload').item.json.emailId }}",
+            "subject": "={{ $('Build OpenAI Request Payload').item.json.subject }}",
+            "attachment_filename": "={{ $('Build OpenAI Request Payload').item.json.attachmentFilename }}",
+            "error_message": "={{ $json.error?.message || JSON.stringify($json) }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "timestamp", "displayName": "timestamp", "type": "string", "canBeUsedToMatch": true },
+            { "id": "stage", "displayName": "stage", "type": "string", "canBeUsedToMatch": true },
+            { "id": "email_id", "displayName": "email_id", "type": "string", "canBeUsedToMatch": true },
+            { "id": "subject", "displayName": "subject", "type": "string", "canBeUsedToMatch": true },
+            { "id": "attachment_filename", "displayName": "attachment_filename", "type": "string", "canBeUsedToMatch": true },
+            { "id": "error_message", "displayName": "error_message", "type": "string", "canBeUsedToMatch": true }
+          ]
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "REPLACE_ME_SHEETS_CRED_ID", "name": "Google Sheets account" }
+      }
+    },
+    {
+      "id": "log-error-drive",
+      "name": "Log Error – Drive Upload Failed",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1480, 620],
+      "parameters": {
+        "operation": "append",
+        "documentId": { "__rl": true, "mode": "id", "value": "REPLACE_ME_SPREADSHEET_ID" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "Errors" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $now.toISO() }}",
+            "stage": "drive-upload",
+            "email_id": "={{ $('Is Invoice?').item.json.emailId }}",
+            "subject": "={{ $('Is Invoice?').item.json.subject }}",
+            "attachment_filename": "={{ $('Is Invoice?').item.json.attachmentFilename }}",
+            "error_message": "={{ $json.error?.message || JSON.stringify($json) }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "timestamp", "displayName": "timestamp", "type": "string", "canBeUsedToMatch": true },
+            { "id": "stage", "displayName": "stage", "type": "string", "canBeUsedToMatch": true },
+            { "id": "email_id", "displayName": "email_id", "type": "string", "canBeUsedToMatch": true },
+            { "id": "subject", "displayName": "subject", "type": "string", "canBeUsedToMatch": true },
+            { "id": "attachment_filename", "displayName": "attachment_filename", "type": "string", "canBeUsedToMatch": true },
+            { "id": "error_message", "displayName": "error_message", "type": "string", "canBeUsedToMatch": true }
+          ]
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "REPLACE_ME_SHEETS_CRED_ID", "name": "Google Sheets account" }
+      }
+    },
+    {
+      "id": "log-error-sheets",
+      "name": "Log Error – Sheet Write Failed",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [2680, 60],
+      "parameters": {
+        "operation": "append",
+        "documentId": { "__rl": true, "mode": "id", "value": "REPLACE_ME_SPREADSHEET_ID" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "Errors" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $now.toISO() }}",
+            "stage": "sheets-write",
+            "email_id": "={{ $json.emailId || '' }}",
+            "subject": "={{ $json.source_email_subject || $json.subject || '' }}",
+            "attachment_filename": "={{ $json.source_attachment_filename || $json.attachmentFilename || '' }}",
+            "error_message": "={{ $json.error?.message || JSON.stringify($json) }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "timestamp", "displayName": "timestamp", "type": "string", "canBeUsedToMatch": true },
+            { "id": "stage", "displayName": "stage", "type": "string", "canBeUsedToMatch": true },
+            { "id": "email_id", "displayName": "email_id", "type": "string", "canBeUsedToMatch": true },
+            { "id": "subject", "displayName": "subject", "type": "string", "canBeUsedToMatch": true },
+            { "id": "attachment_filename", "displayName": "attachment_filename", "type": "string", "canBeUsedToMatch": true },
+            { "id": "error_message", "displayName": "error_message", "type": "string", "canBeUsedToMatch": true }
+          ]
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "REPLACE_ME_SHEETS_CRED_ID", "name": "Google Sheets account" }
+      }
+    }
+  ],
+  "connections": {
+    "Gmail Trigger – New Mail With Attachment": {
+      "main": [
+        [
+          { "node": "Gmail – Label As Processing", "type": "main", "index": 0 },
+          { "node": "Split Email Attachments", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Split Email Attachments": {
+      "main": [
+        [ { "node": "Keep PDF Attachments Only", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Keep PDF Attachments Only": {
+      "main": [
+        [ { "node": "Build OpenAI Request Payload", "type": "main", "index": 0 } ],
+        [ { "node": "Tag Skip Reason – Non-PDF", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Tag Skip Reason – Non-PDF": {
+      "main": [
+        [ { "node": "Log Skipped File", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Build OpenAI Request Payload": {
+      "main": [
+        [ { "node": "OpenAI – Classify & Extract Invoices", "type": "main", "index": 0 } ]
+      ]
+    },
+    "OpenAI – Classify & Extract Invoices": {
+      "main": [
+        [ { "node": "Parse AI JSON Response", "type": "main", "index": 0 } ],
+        [ { "node": "Log Error – AI Extraction Failed", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Parse AI JSON Response": {
+      "main": [
+        [ { "node": "Parse OK?", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Parse OK?": {
+      "main": [
+        [ { "node": "Is Invoice?", "type": "main", "index": 0 } ],
+        [ { "node": "Tag Skip Reason – Parse Error", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Tag Skip Reason – Parse Error": {
+      "main": [
+        [ { "node": "Log Skipped File", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Is Invoice?": {
+      "main": [
+        [ { "node": "Upload Original PDF To Drive", "type": "main", "index": 0 } ],
+        [ { "node": "Tag Skip Reason – Not An Invoice", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Tag Skip Reason – Not An Invoice": {
+      "main": [
+        [ { "node": "Log Skipped File", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Upload Original PDF To Drive": {
+      "main": [
+        [ { "node": "Combine Drive Info + AI Result", "type": "main", "index": 0 } ],
+        [ { "node": "Log Error – Drive Upload Failed", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Combine Drive Info + AI Result": {
+      "main": [
+        [ { "node": "Split Out Individual Invoices", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Split Out Individual Invoices": {
+      "main": [
+        [ { "node": "Build Invoice Summary Fields", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Build Invoice Summary Fields": {
+      "main": [
+        [
+          { "node": "Upsert Invoice Row", "type": "main", "index": 0 },
+          { "node": "Flatten Line Items", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Upsert Invoice Row": {
+      "main": [
+        [],
+        [ { "node": "Log Error – Sheet Write Failed", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Flatten Line Items": {
+      "main": [
+        [ { "node": "Upsert Line Item Row", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Upsert Line Item Row": {
+      "main": [
+        [],
+        [ { "node": "Log Error – Sheet Write Failed", "type": "main", "index": 0 } ]
+      ]
+    }
+  }
+}
