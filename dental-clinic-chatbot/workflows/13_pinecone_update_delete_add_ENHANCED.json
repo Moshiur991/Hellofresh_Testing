@@ -1,0 +1,1952 @@
+{
+  "name": "13_pinecone update_delete_add (enhanced - lifecycle sync)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "7a7c3f0e-e7ba-4545-b656-51f805d955e9",
+      "name": "Run KB Ingestion",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -2128,
+        64
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "k1",
+              "name": "clinic_name",
+              "value": "Smiley Dental Clinic",
+              "type": "string"
+            },
+            {
+              "id": "k2",
+              "name": "pinecone_index",
+              "value": "smiley-dental-clinic-kb",
+              "type": "string"
+            },
+            {
+              "id": "k3",
+              "name": "pinecone_namespace",
+              "value": "__default__",
+              "type": "string"
+            },
+            {
+              "id": "k4",
+              "name": "folder_id",
+              "value": "1UtfUWP4zNR5ck6J66i1UVYlhwPY5nc9t",
+              "type": "string"
+            },
+            {
+              "id": "k5",
+              "name": "category",
+              "value": "Policy and FAQ",
+              "type": "string"
+            },
+            {
+              "id": "k6",
+              "name": "clinic_id",
+              "value": "smiley-dental",
+              "type": "string"
+            },
+            {
+              "id": "k7",
+              "name": "pinecone_host",
+              "value": "REPLACE_ME_PINECONE_INDEX_HOST",
+              "type": "string"
+            },
+            {
+              "id": "k8",
+              "name": "registry_sheet_id",
+              "value": "REPLACE_ME_REGISTRY_SHEET_ID",
+              "type": "string"
+            },
+            {
+              "id": "k9",
+              "name": "embedding_dimension",
+              "value": 1536,
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0d698102-069f-433c-87c6-fffdbad62086",
+      "name": "Ingestion Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1904,
+        64
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "searchMethod": "query",
+        "queryString": "={{ \"'\" + $json.folder_id + \"' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'\" }}",
+        "returnAll": true,
+        "filter": {},
+        "options": {}
+      },
+      "id": "e35a4224-975e-48fa-959f-60bf575d4367",
+      "name": "List Files In Folder",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -1680,
+        64
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "T8CIYbUU0sc6TUjf",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.id }}"
+        },
+        "options": {
+          "binaryPropertyName": "data",
+          "googleFileConversion": {
+            "conversion": {
+              "docsToFormat": "text/plain"
+            }
+          }
+        }
+      },
+      "id": "9599d6d9-4cc1-424b-8e85-5e83073a0806",
+      "name": "Download File",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -1456,
+        64
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "T8CIYbUU0sc6TUjf",
+          "name": "Google Drive account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const cfg = $json; // config fields already merged onto this item by the entry-point config node\nconst f = $json;\n\nreturn {\n  json: {\n    clinic_id: cfg.clinic_id || '',\n    clinic_name: cfg.clinic_name || '',\n    category: cfg.category || '',\n\n    pinecone_index: cfg.pinecone_index || '',\n    pinecone_namespace: cfg.pinecone_namespace || '__default__',\n    pinecone_host: cfg.pinecone_host || '',\n    registry_sheet_id: cfg.registry_sheet_id || '',\n\n    source_document: f.name || f.originalFilename || f.source_document || 'unknown',\n    google_drive_file_id: f.id || f.google_drive_file_id || '',\n\n    file_type:\n      $binary?.data?.fileExtension ||\n      $binary?.data?.mimeType ||\n      'unknown',\n\n    mime_type:\n      $binary?.data?.mimeType || 'unknown',\n\n    source_url: f.webViewLink || f.source_url || '',\n\n    last_updated: $now.toISODate(),\n\n    chunk_id: (f.name || f.source_document || 'doc') + \"_\" + (f.id || f.google_drive_file_id || Date.now())\n  },\n\n  binary: $binary\n};"
+      },
+      "id": "3b71150f-562c-46c3-8533-85acb212c9f1",
+      "name": "Prep Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -784,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "32692de6-0896-4759-b665-668035244f51",
+      "name": "Embeddings OpenAI (KB)",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        -288,
+        64
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "0oUyS86LpWmlCbgw",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chunkOverlap": 150,
+        "options": {}
+      },
+      "id": "993e6a7c-4442-44b5-a9c7-e8031360e55e",
+      "name": "Recursive Text Splitter",
+      "type": "@n8n/n8n-nodes-langchain.textSplitterRecursiveCharacterTextSplitter",
+      "typeVersion": 1,
+      "position": [
+        -80,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "dataType": "binary",
+        "binaryMode": "specificField",
+        "options": {
+          "metadata": {
+            "metadataValues": [
+              {
+                "name": "clinic_name",
+                "value": "={{ $json.clinic_name }}"
+              },
+              {
+                "name": "category",
+                "value": "={{ $json.category }}"
+              },
+              {
+                "name": "source_document",
+                "value": "={{ $json.source_document }}"
+              },
+              {
+                "name": "source_url",
+                "value": "={{ $json.source_url }}"
+              },
+              {
+                "name": "last_updated",
+                "value": "={{ $json.last_updated }}"
+              },
+              {
+                "name": "clinic_id",
+                "value": "={{ $json.clinic_id }}"
+              },
+              {
+                "name": "google_drive_file_id",
+                "value": "={{ $json.google_drive_file_id }}"
+              },
+              {
+                "name": "file_type",
+                "value": "={{ $json.file_type }}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "9d6a53cc-b858-4bcb-9145-40b97558f9d8",
+      "name": "Default Data Loader",
+      "type": "@n8n/n8n-nodes-langchain.documentDefaultDataLoader",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        64
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "insert",
+        "pineconeIndex": {
+          "__rl": true,
+          "value": "={{ $json.pinecone_index }}",
+          "mode": "id"
+        },
+        "options": {
+          "clearNamespace": false,
+          "pineconeNamespace": "={{ $json.pinecone_namespace }}"
+        }
+      },
+      "id": "71f85905-129a-4f16-9c99-b34ab4e00ead",
+      "name": "Pinecone \u2014 Insert",
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePinecone",
+      "typeVersion": 1.1,
+      "position": [
+        -256,
+        -160
+      ],
+      "credentials": {
+        "pineconeApi": {
+          "id": "WoBfr766DbvHgLff",
+          "name": "Pinecone account"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$binary.data.mimeType}}",
+                    "rightValue": "application/pdf",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "b90c4148-5fb0-4803-9551-27a023c3da0b"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "PDF"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "6cf0556e-8a15-41f0-a7c0-c621571db1e6",
+                    "leftValue": "={{ $binary.data.mimeType }}",
+                    "rightValue": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "DOCX"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "c62e31bb-27c6-4c5a-a40d-4848bc9a2fe7",
+                    "leftValue": "={{ $binary.data.mimeType }}",
+                    "rightValue": "text/plain",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "TXT"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "df146dfd-70e1-4685-a24b-e09272599b23",
+                    "leftValue": "={{ $binary.data.mimeType }}",
+                    "rightValue": "application/vnd.google-apps.document",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Google Docs"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "dc9417a6-50b3-4c8c-8575-862639669966",
+                    "leftValue": "={{ $binary.data.mimeType }}",
+                    "rightValue": "text/csv",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "CSV"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "6f0a6553-a81b-4de4-b8b6-b25e956df039",
+                    "leftValue": "={{ $binary.data.mimeType }}",
+                    "rightValue": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Excel"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -1184,
+        0
+      ],
+      "id": "e7ad823a-5c9b-461c-8503-20666bd7b7f7",
+      "name": "Switch"
+    },
+    {
+      "id": "mergeFileConfig",
+      "name": "Merge File + Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1570,
+        220
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const cfg = $('Ingestion Config').first().json;\nconst f = $json;\nreturn {\n  json: { ...f, clinic_id: cfg.clinic_id, clinic_name: cfg.clinic_name, category: cfg.category,\n    pinecone_index: cfg.pinecone_index, pinecone_namespace: cfg.pinecone_namespace, pinecone_host: cfg.pinecone_host,\n    registry_sheet_id: cfg.registry_sheet_id },\n  binary: $binary\n};"
+      }
+    },
+    {
+      "id": "validateFile",
+      "name": "Validate Downloaded File",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1230,
+        220
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const hasError = !!$json.error;\nconst hasContent = !!($binary && $binary.data && $binary.data.data && $binary.data.data.length > 0);\nlet reason = 'ok';\nif (hasError) reason = 'download_failed';\nelse if (!hasContent) reason = 'empty_file';\nreturn { json: { ...$json, _validation_reason: reason }, binary: $binary };"
+      }
+    },
+    {
+      "id": "fileValidSwitch",
+      "name": "File Valid?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -1230,
+        380
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json._validation_reason }}",
+                    "rightValue": "ok",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "v1"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "OK"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json._validation_reason }}",
+                    "rightValue": "download_failed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "v2"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Download Failed"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json._validation_reason }}",
+                    "rightValue": "empty_file",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "v3"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Empty File"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "tagDownloadFail",
+      "name": "Tag Error - Download Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -980,
+        460
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: { registry_sheet_id: $json.registry_sheet_id, timestamp: $now.toISO(),\n  google_drive_file_id: $json.id || $json.google_drive_file_id || '', source_document: $json.name || $json.source_document || 'unknown',\n  error_type: 'download_failed', error_message: ($json.error && $json.error.message) || 'File download failed', stage: 'download' } };"
+      }
+    },
+    {
+      "id": "tagEmptyFile",
+      "name": "Tag Error - Empty File",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -980,
+        560
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: { registry_sheet_id: $json.registry_sheet_id, timestamp: $now.toISO(),\n  google_drive_file_id: $json.id || $json.google_drive_file_id || '', source_document: $json.name || $json.source_document || 'unknown',\n  error_type: 'empty_file', error_message: 'Downloaded file has no content (0 bytes)', stage: 'download' } };"
+      }
+    },
+    {
+      "id": "tagUnsupported",
+      "name": "Tag Error - Unsupported File Type",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -980,
+        660
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: { registry_sheet_id: $json.registry_sheet_id, timestamp: $now.toISO(),\n  google_drive_file_id: $json.id || $json.google_drive_file_id || '', source_document: $json.name || $json.source_document || 'unknown',\n  error_type: 'unsupported_file_type', error_message: 'Unsupported mime type: ' + (($binary && $binary.data && $binary.data.mimeType) || 'unknown'), stage: 'file_type_check' } };"
+      }
+    },
+    {
+      "id": "tagPineconeInsertFail",
+      "name": "Tag Error - Pinecone Insert Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        -380
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: { registry_sheet_id: $json.registry_sheet_id, timestamp: $now.toISO(),\n  google_drive_file_id: $json.google_drive_file_id || $json.id || '', source_document: $json.source_document || $json.name || 'unknown',\n  error_type: 'pinecone_insert_failed', error_message: ($json.error && $json.error.message) || JSON.stringify($json).slice(0,300), stage: 'pinecone_insert' } };"
+      }
+    },
+    {
+      "id": "tagPineconeDeleteFail",
+      "name": "Tag Error - Pinecone Delete Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        -260
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: { registry_sheet_id: $json.registry_sheet_id, timestamp: $now.toISO(),\n  google_drive_file_id: $json.google_drive_file_id || $json.id || '', source_document: $json.source_document || $json.name || 'unknown',\n  error_type: 'pinecone_delete_failed', error_message: ($json.error && $json.error.message) || JSON.stringify($json).slice(0,300), stage: 'pinecone_delete' } };"
+      }
+    },
+    {
+      "id": "logError",
+      "name": "Log Ingestion Error",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        460,
+        200
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.registry_sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Ingestion_Errors"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "registerDoc",
+      "name": "Register Indexed Document",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        200,
+        60
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.registry_sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Indexed_Documents"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [
+            "google_drive_file_id"
+          ],
+          "value": {}
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "shapeRegistryRow",
+      "name": "Shape Registry Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -40,
+        60
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: { registry_sheet_id: $json.registry_sheet_id, google_drive_file_id: $json.google_drive_file_id,\n  source_document: $json.source_document, category: $json.category, file_type: $json.file_type,\n  clinic_id: $json.clinic_id, clinic_name: $json.clinic_name, last_indexed: $now.toISO(), status: 'Active' } };"
+      }
+    },
+    {
+      "id": "newFileTrigger",
+      "name": "New File Added",
+      "type": "n8n-nodes-base.googleDriveTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1570,
+        -420
+      ],
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "triggerOn": "specificFolder",
+        "folderToWatch": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1UtfUWP4zNR5ck6J66i1UVYlhwPY5nc9t"
+        },
+        "event": "fileCreated",
+        "options": {}
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "T8CIYbUU0sc6TUjf",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "id": "attachCfgNew",
+      "name": "Attach Clinic Config (New File)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1330,
+        -420
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "clinic_id",
+              "value": "smiley-dental",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "clinic_name",
+              "value": "Smiley Dental Clinic",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "category",
+              "value": "Policy and FAQ",
+              "type": "string"
+            },
+            {
+              "id": "a4",
+              "name": "pinecone_index",
+              "value": "smiley-dental-clinic-kb",
+              "type": "string"
+            },
+            {
+              "id": "a5",
+              "name": "pinecone_namespace",
+              "value": "__default__",
+              "type": "string"
+            },
+            {
+              "id": "a6",
+              "name": "pinecone_host",
+              "value": "REPLACE_ME_PINECONE_INDEX_HOST",
+              "type": "string"
+            },
+            {
+              "id": "a7",
+              "name": "registry_sheet_id",
+              "value": "REPLACE_ME_REGISTRY_SHEET_ID",
+              "type": "string"
+            },
+            {
+              "id": "a8b",
+              "name": "embedding_dimension",
+              "value": 1536,
+              "type": "number"
+            }
+          ]
+        },
+        "include": "all",
+        "options": {}
+      }
+    },
+    {
+      "id": "updFileTrigger",
+      "name": "File Updated",
+      "type": "n8n-nodes-base.googleDriveTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1570,
+        780
+      ],
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "triggerOn": "specificFolder",
+        "folderToWatch": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1UtfUWP4zNR5ck6J66i1UVYlhwPY5nc9t"
+        },
+        "event": "fileUpdated",
+        "options": {}
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "T8CIYbUU0sc6TUjf",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "id": "attachCfgUpd",
+      "name": "Attach Clinic Config (Updated File)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1330,
+        780
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "clinic_id",
+              "value": "smiley-dental",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "clinic_name",
+              "value": "Smiley Dental Clinic",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "category",
+              "value": "Policy and FAQ",
+              "type": "string"
+            },
+            {
+              "id": "a4",
+              "name": "pinecone_index",
+              "value": "smiley-dental-clinic-kb",
+              "type": "string"
+            },
+            {
+              "id": "a5",
+              "name": "pinecone_namespace",
+              "value": "__default__",
+              "type": "string"
+            },
+            {
+              "id": "a6",
+              "name": "pinecone_host",
+              "value": "REPLACE_ME_PINECONE_INDEX_HOST",
+              "type": "string"
+            },
+            {
+              "id": "a7",
+              "name": "registry_sheet_id",
+              "value": "REPLACE_ME_REGISTRY_SHEET_ID",
+              "type": "string"
+            },
+            {
+              "id": "a8b",
+              "name": "embedding_dimension",
+              "value": 1536,
+              "type": "number"
+            }
+          ]
+        },
+        "include": "all",
+        "options": {}
+      }
+    },
+    {
+      "id": "Delete_Old_Vectors_query",
+      "name": "Delete Old Vectors - Find Vector IDs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1090,
+        780
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.pinecone_host }}/query",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ vector: Array($json.embedding_dimension || 1536).fill(0), filter: { google_drive_file_id: { \"$eq\": $json.google_drive_file_id || $json.id } }, topK: 10000, includeValues: false, includeMetadata: false, namespace: $json.pinecone_namespace }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_ME_PINECONE_HEADER_CRED_ID",
+          "name": "Pinecone Data API (Header Auth)"
+        }
+      }
+    },
+    {
+      "id": "Delete_Old_Vectors_extract",
+      "name": "Delete Old Vectors - Extract IDs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -870,
+        780
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const matches = ($json.matches || []);\nconst ids = matches.map(m => m.id).filter(Boolean);\nreturn { json: { ...$json, _vector_ids_to_delete: ids } };"
+      }
+    },
+    {
+      "id": "Delete_Old_Vectors_if",
+      "name": "Delete Old Vectors - Any Vectors?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -650,
+        780
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json._vector_ids_to_delete.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "Delete_Old_Vectors_delete",
+      "name": "Delete Old Vectors - Delete By ID",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -430,
+        720
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.pinecone_host }}/vectors/delete",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ ids: $json._vector_ids_to_delete, namespace: $json.pinecone_namespace }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_ME_PINECONE_HEADER_CRED_ID",
+          "name": "Pinecone Data API (Header Auth)"
+        }
+      }
+    },
+    {
+      "id": "deletionSchedule",
+      "name": "Check For Deleted Files",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1570,
+        1080
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "attachCfgDel",
+      "name": "Attach Clinic Config (Deletion Check)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1330,
+        1080
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "clinic_id",
+              "value": "smiley-dental",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "clinic_name",
+              "value": "Smiley Dental Clinic",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "category",
+              "value": "Policy and FAQ",
+              "type": "string"
+            },
+            {
+              "id": "a4",
+              "name": "pinecone_index",
+              "value": "smiley-dental-clinic-kb",
+              "type": "string"
+            },
+            {
+              "id": "a5",
+              "name": "pinecone_namespace",
+              "value": "__default__",
+              "type": "string"
+            },
+            {
+              "id": "a6",
+              "name": "pinecone_host",
+              "value": "REPLACE_ME_PINECONE_INDEX_HOST",
+              "type": "string"
+            },
+            {
+              "id": "a7",
+              "name": "registry_sheet_id",
+              "value": "REPLACE_ME_REGISTRY_SHEET_ID",
+              "type": "string"
+            },
+            {
+              "id": "a8b",
+              "name": "embedding_dimension",
+              "value": 1536,
+              "type": "number"
+            },
+            {
+              "id": "a8",
+              "name": "folder_id",
+              "value": "1UtfUWP4zNR5ck6J66i1UVYlhwPY5nc9t",
+              "type": "string"
+            }
+          ]
+        },
+        "include": "all",
+        "options": {}
+      }
+    },
+    {
+      "id": "listCurrentFilesDel",
+      "name": "List Current Files (Deletion Check)",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -1090,
+        1080
+      ],
+      "parameters": {
+        "resource": "fileFolder",
+        "searchMethod": "query",
+        "queryString": "={{ \"'\" + $json.folder_id + \"' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'\" }}",
+        "returnAll": true,
+        "filter": {},
+        "options": {}
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "T8CIYbUU0sc6TUjf",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "id": "collectCurrentIds",
+      "name": "Collect Current File IDs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -850,
+        1080
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const ids = $input.all().map(i => i.json.id).filter(Boolean);\nconst cfg = $('Attach Clinic Config (Deletion Check)').first().json;\nreturn [{ json: { current_file_ids: ids, registry_sheet_id: cfg.registry_sheet_id, pinecone_index: cfg.pinecone_index,\n  pinecone_namespace: cfg.pinecone_namespace, pinecone_host: cfg.pinecone_host, embedding_dimension: cfg.embedding_dimension } }];"
+      }
+    },
+    {
+      "id": "readRegistry",
+      "name": "Read Indexed Documents Registry",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -610,
+        1080
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Collect Current File IDs').first().json.registry_sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Indexed_Documents"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "findDeleted",
+      "name": "Find Deleted Files",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -370,
+        1080
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const meta = $('Collect Current File IDs').first().json;\nconst currentIds = meta.current_file_ids || [];\nconst rows = $input.all().map(i => i.json).filter(r => r && r.google_drive_file_id && (r.status || 'Active') !== 'Deleted');\nconst deleted = rows.filter(r => !currentIds.includes(r.google_drive_file_id));\nreturn deleted.map(r => ({ json: {\n  google_drive_file_id: r.google_drive_file_id, source_document: r.source_document || '',\n  pinecone_index: meta.pinecone_index, pinecone_namespace: meta.pinecone_namespace, pinecone_host: meta.pinecone_host,\n  embedding_dimension: meta.embedding_dimension, registry_sheet_id: meta.registry_sheet_id\n} }));"
+      }
+    },
+    {
+      "id": "Delete_Removed_File_Vectors_query",
+      "name": "Delete Removed File Vectors - Find Vector IDs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -130,
+        1080
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.pinecone_host }}/query",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ vector: Array($json.embedding_dimension || 1536).fill(0), filter: { google_drive_file_id: { \"$eq\": $json.google_drive_file_id || $json.id } }, topK: 10000, includeValues: false, includeMetadata: false, namespace: $json.pinecone_namespace }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_ME_PINECONE_HEADER_CRED_ID",
+          "name": "Pinecone Data API (Header Auth)"
+        }
+      }
+    },
+    {
+      "id": "Delete_Removed_File_Vectors_extract",
+      "name": "Delete Removed File Vectors - Extract IDs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        90,
+        1080
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const matches = ($json.matches || []);\nconst ids = matches.map(m => m.id).filter(Boolean);\nreturn { json: { ...$json, _vector_ids_to_delete: ids } };"
+      }
+    },
+    {
+      "id": "Delete_Removed_File_Vectors_if",
+      "name": "Delete Removed File Vectors - Any Vectors?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        310,
+        1080
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json._vector_ids_to_delete.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "Delete_Removed_File_Vectors_delete",
+      "name": "Delete Removed File Vectors - Delete By ID",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        530,
+        1020
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.pinecone_host }}/vectors/delete",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ ids: $json._vector_ids_to_delete, namespace: $json.pinecone_namespace }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_ME_PINECONE_HEADER_CRED_ID",
+          "name": "Pinecone Data API (Header Auth)"
+        }
+      }
+    },
+    {
+      "id": "shapeDeletedRow",
+      "name": "Shape Deleted Registry Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        1020
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: { registry_sheet_id: $json.registry_sheet_id, google_drive_file_id: $json.google_drive_file_id,\n  last_indexed: $now.toISO(), status: 'Deleted' } };"
+      }
+    },
+    {
+      "id": "markDeleted",
+      "name": "Mark Registry Row As Deleted",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        800,
+        1020
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.registry_sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Indexed_Documents"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [
+            "google_drive_file_id"
+          ],
+          "value": {}
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "noteMain",
+      "name": "README \u2014 What changed",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1900,
+        -680
+      ],
+      "parameters": {
+        "width": 900,
+        "height": 520,
+        "color": 4,
+        "content": "## Document Lifecycle Sync \u2014 added on top of the original ingestion workflow\n\nOriginal manual batch flow (Run KB Ingestion -> ... -> Pinecone Insert) is UNCHANGED in shape, just extended with entry-point-agnostic config passing so it can be shared by 3 new triggers.\n\n### New entry points\n- 'New File Added' (Drive Trigger, fileCreated) -> reuses Download File -> Switch -> Prep Metadata -> ... -> Pinecone Insert -> registers in Indexed_Documents.\n- 'File Updated' (Drive Trigger, fileUpdated) -> deletes old vectors for that file_id FIRST, then reprocesses through the SAME shared chain (no duplicate vectors).\n- 'Check For Deleted Files' (hourly schedule) -> lists current Drive files, diffs against the Indexed_Documents registry, deletes Pinecone vectors for any file no longer present, marks the registry row Deleted. Drive has no native delete trigger, so this poll+diff is the simplest reliable alternative (see main answer for why the Changes API / push notifications were NOT used).\n\n### Required manual setup (see full summary in chat)\n1. Fill `pinecone_host` and `registry_sheet_id` in 'Ingestion Config' AND in the 3 new 'Attach Clinic Config (...)' Set nodes (values must match).\n2. Create an HTTP Header Auth credential named 'Pinecone Data API (Header Auth)' \u2014 header name `Api-Key`, value = your Pinecone API key.\n3. Create a Google Sheet with 2 tabs: `Indexed_Documents` and `Ingestion_Errors` (columns in chat summary).\n4. Re-select the Google Sheets / Google Drive credentials on the new nodes."
+      }
+    },
+    {
+      "id": "noteDelete",
+      "name": "Why deletion is a query-then-delete-by-id pair",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1090,
+        900
+      ],
+      "parameters": {
+        "width": 560,
+        "height": 340,
+        "color": 6,
+        "content": "n8n's Pinecone LangChain node has no delete-by-metadata operation (insert/load only), so this uses Pinecone's REST API directly via HTTP Request nodes. IMPORTANT: Pinecone SERVERLESS indexes do NOT support deleting by a metadata filter directly \u2014 only pod-based indexes do. To work on both, each deletion point first calls POST {host}/query with the google_drive_file_id filter (using a dummy zero-vector, since /query requires one) to collect the matching vector IDs, then calls POST {host}/vectors/delete with those explicit ids. `pinecone_host` (from the Pinecone console's Index page) and `embedding_dimension` (1536 for text-embedding-3-small, matching Embeddings OpenAI (KB)) are one-time config values rather than looked up dynamically, to keep this simple."
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Run KB Ingestion": {
+      "main": [
+        [
+          {
+            "node": "Ingestion Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ingestion Config": {
+      "main": [
+        [
+          {
+            "node": "List Files In Folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Files In Folder": {
+      "main": [
+        [
+          {
+            "node": "Merge File + Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download File": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Validate Downloaded File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prep Metadata": {
+      "main": [
+        [
+          {
+            "node": "Pinecone \u2014 Insert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings OpenAI (KB)": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Pinecone \u2014 Insert",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recursive Text Splitter": {
+      "ai_textSplitter": [
+        [
+          {
+            "node": "Default Data Loader",
+            "type": "ai_textSplitter",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Default Data Loader": {
+      "ai_document": [
+        [
+          {
+            "node": "Pinecone \u2014 Insert",
+            "type": "ai_document",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Prep Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prep Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prep Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prep Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prep Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prep Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tag Error - Unsupported File Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge File + Config": {
+      "main": [
+        [
+          {
+            "node": "Download File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Downloaded File": {
+      "main": [
+        [
+          {
+            "node": "File Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File Valid?": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tag Error - Download Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tag Error - Empty File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag Error - Download Failed": {
+      "main": [
+        [
+          {
+            "node": "Log Ingestion Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag Error - Empty File": {
+      "main": [
+        [
+          {
+            "node": "Log Ingestion Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag Error - Unsupported File Type": {
+      "main": [
+        [
+          {
+            "node": "Log Ingestion Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag Error - Pinecone Insert Failed": {
+      "main": [
+        [
+          {
+            "node": "Log Ingestion Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag Error - Pinecone Delete Failed": {
+      "main": [
+        [
+          {
+            "node": "Log Ingestion Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pinecone \u2014 Insert": {
+      "main": [
+        [
+          {
+            "node": "Shape Registry Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tag Error - Pinecone Insert Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape Registry Row": {
+      "main": [
+        [
+          {
+            "node": "Register Indexed Document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "New File Added": {
+      "main": [
+        [
+          {
+            "node": "Attach Clinic Config (New File)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach Clinic Config (New File)": {
+      "main": [
+        [
+          {
+            "node": "Download File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Old Vectors - Find Vector IDs": {
+      "main": [
+        [
+          {
+            "node": "Delete Old Vectors - Extract IDs",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tag Error - Pinecone Delete Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Old Vectors - Extract IDs": {
+      "main": [
+        [
+          {
+            "node": "Delete Old Vectors - Any Vectors?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Old Vectors - Any Vectors?": {
+      "main": [
+        [
+          {
+            "node": "Delete Old Vectors - Delete By ID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Download File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Old Vectors - Delete By ID": {
+      "main": [
+        [
+          {
+            "node": "Download File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tag Error - Pinecone Delete Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File Updated": {
+      "main": [
+        [
+          {
+            "node": "Attach Clinic Config (Updated File)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach Clinic Config (Updated File)": {
+      "main": [
+        [
+          {
+            "node": "Delete Old Vectors - Find Vector IDs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check For Deleted Files": {
+      "main": [
+        [
+          {
+            "node": "Attach Clinic Config (Deletion Check)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach Clinic Config (Deletion Check)": {
+      "main": [
+        [
+          {
+            "node": "List Current Files (Deletion Check)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Current Files (Deletion Check)": {
+      "main": [
+        [
+          {
+            "node": "Collect Current File IDs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Current File IDs": {
+      "main": [
+        [
+          {
+            "node": "Read Indexed Documents Registry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Indexed Documents Registry": {
+      "main": [
+        [
+          {
+            "node": "Find Deleted Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Removed File Vectors - Find Vector IDs": {
+      "main": [
+        [
+          {
+            "node": "Delete Removed File Vectors - Extract IDs",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tag Error - Pinecone Delete Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Removed File Vectors - Extract IDs": {
+      "main": [
+        [
+          {
+            "node": "Delete Removed File Vectors - Any Vectors?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Removed File Vectors - Any Vectors?": {
+      "main": [
+        [
+          {
+            "node": "Delete Removed File Vectors - Delete By ID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Shape Deleted Registry Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Removed File Vectors - Delete By ID": {
+      "main": [
+        [
+          {
+            "node": "Shape Deleted Registry Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tag Error - Pinecone Delete Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Deleted Files": {
+      "main": [
+        [
+          {
+            "node": "Delete Removed File Vectors - Find Vector IDs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "a12f4ae8-9aa8-48f0-b5a6-b67378d775aa",
+  "meta": {
+    "instanceId": "42415980a5748368e93ca35a554f6f59e4cb9249582307a14053caecf0808e23"
+  },
+  "id": "WFUkyiIDkOqxkUlK",
+  "tags": []
+}
