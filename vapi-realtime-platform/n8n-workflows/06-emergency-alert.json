@@ -27,8 +27,7 @@
             { "id": "e4", "name": "issueSummary", "type": "string", "value": "={{ $json.body.issueSummary }}" },
             { "id": "e5", "name": "severity", "type": "string", "value": "={{ $json.body.severity }}" },
             { "id": "e6", "name": "action", "type": "string", "value": "={{ $json.body.action }}" },
-            { "id": "e7", "name": "ghlLocationId", "type": "string", "value": "={{ $json.body.ghlLocationId }}" },
-            { "id": "e8", "name": "frontDeskOwnerId", "type": "string", "value": "={{ $json.body.frontDeskOwnerId }}" },
+            { "id": "e7", "name": "sheetId", "type": "string", "value": "={{ $json.body.sheetId }}" },
             { "id": "e9", "name": "slackChannel", "type": "string", "value": "={{ $json.body.slackChannel || '#emergencies' }}" }
           ]
         },
@@ -83,7 +82,7 @@
           "conditions": [
             {
               "id": "g1",
-              "leftValue": "={{ $json.ghlLocationId }}",
+              "leftValue": "={{ $json.sheetId }}",
               "rightValue": "",
               "operator": { "type": "string", "operation": "notEmpty" }
             }
@@ -92,39 +91,39 @@
         },
         "options": {}
       },
-      "id": "eg10-has-ghl",
-      "name": "Has GHL Location?",
+      "id": "eg10-has-sheet",
+      "name": "Has Sheet ID?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [880, 300]
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "https://services.leadconnectorhq.com/tasks/",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "Version", "value": "2021-07-28" },
-            { "name": "Content-Type", "value": "application/json" }
-          ]
+        "operation": "append",
+        "documentId": { "mode": "id", "value": "={{ $json.sheetId }}" },
+        "sheetName": { "mode": "name", "value": "Emergencies" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $now.toISO() }}",
+            "caller_phone": "={{ $json.callerPhone }}",
+            "issue_summary": "={{ $json.issueSummary }}",
+            "severity": "={{ $json.severity }}",
+            "action_taken": "={{ $json.action }}"
+          }
         },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ locationId: $json.ghlLocationId, title: '🚨 EMERGENCY callback: ' + $json.callerPhone, assignedTo: $json.frontDeskOwnerId, dueDate: $now.plus({ minutes: 15 }).toISO() }) }}",
-        "options": { "timeout": 5000 },
+        "options": {},
         "onError": "continueErrorOutput"
       },
-      "id": "eg5-ghl-task",
-      "name": "Create GHL Urgent Task",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "id": "eg5-log-sheet",
+      "name": "Log Emergency to Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
       "position": [1100, 220],
       "onError": "continueErrorOutput",
+      "notes": "Appends a row to this client's 'Emergencies' tab. Click through this node once after import to map columns.",
       "credentials": {
-        "httpHeaderAuth": { "id": "PLACEHOLDER_GHL_CRED", "name": "Go High Level API" }
+        "googleSheetsOAuth2Api": { "id": "PLACEHOLDER_GOOGLE_SHEETS_CRED", "name": "Google Sheets account" }
       }
     },
     {
@@ -243,17 +242,17 @@
     },
     "Email On-Call Staff": {
       "main": [
-        [{ "node": "Has GHL Location?", "type": "main", "index": 0 }],
+        [{ "node": "Has Sheet ID?", "type": "main", "index": 0 }],
         [{ "node": "Handle Failure", "type": "main", "index": 0 }]
       ]
     },
-    "Has GHL Location?": {
+    "Has Sheet ID?": {
       "main": [
-        [{ "node": "Create GHL Urgent Task", "type": "main", "index": 0 }],
+        [{ "node": "Log Emergency to Sheet", "type": "main", "index": 0 }],
         [{ "node": "Notify Team", "type": "main", "index": 0 }]
       ]
     },
-    "Create GHL Urgent Task": {
+    "Log Emergency to Sheet": {
       "main": [
         [{ "node": "Notify Team", "type": "main", "index": 0 }],
         [{ "node": "Handle Failure", "type": "main", "index": 0 }]

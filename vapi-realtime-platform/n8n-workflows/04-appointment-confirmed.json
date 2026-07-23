@@ -14,7 +14,7 @@
       "typeVersion": 2,
       "position": [0, 300],
       "webhookId": "appointment-confirmed-master",
-      "notes": "NOT called by the phone system. This fires when a STAFF MEMBER actually confirms a tentative booking — e.g. a GoHighLevel automation calling this webhook when the appointment's pipeline stage is moved to 'Confirmed', or any simple staff-facing 'Confirm' button/form you point at this URL. Send the same fields as appointment-booked (businessId, appointmentId, businessName, customer, startTime, serviceType, ghlContactId, slackChannel)."
+      "notes": "NOT called by the phone system. This fires when a STAFF MEMBER actually confirms a tentative booking — e.g. a GoHighLevel automation calling this webhook when the appointment's pipeline stage is moved to 'Confirmed', or any simple staff-facing 'Confirm' button/form you point at this URL. Send the same fields as appointment-booked (businessId, appointmentId, businessName, customer, startTime, serviceType, sheetId, slackChannel)."
     },
     {
       "parameters": {
@@ -29,7 +29,7 @@
             { "id": "a5", "name": "customerEmail", "type": "string", "value": "={{ $json.body.customer.email }}" },
             { "id": "a6", "name": "startTime", "type": "string", "value": "={{ $json.body.startTime }}" },
             { "id": "a7", "name": "serviceType", "type": "string", "value": "={{ $json.body.serviceType }}" },
-            { "id": "a9", "name": "ghlContactId", "type": "string", "value": "={{ $json.body.ghlContactId }}" },
+            { "id": "a9", "name": "sheetId", "type": "string", "value": "={{ $json.body.sheetId }}" },
             { "id": "a11", "name": "slackChannel", "type": "string", "value": "={{ $json.body.slackChannel || '#bookings' }}" }
           ]
         },
@@ -84,7 +84,7 @@
           "conditions": [
             {
               "id": "g1",
-              "leftValue": "={{ $json.ghlContactId }}",
+              "leftValue": "={{ $json.sheetId }}",
               "rightValue": "",
               "operator": { "type": "string", "operation": "notEmpty" }
             }
@@ -93,39 +93,38 @@
         },
         "options": {}
       },
-      "id": "ac12-has-ghl",
-      "name": "Has GHL Contact?",
+      "id": "ac12-has-sheet",
+      "name": "Has Sheet ID?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [880, 300]
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "=https://services.leadconnectorhq.com/contacts/{{ $json.ghlContactId }}/notes",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "Version", "value": "2021-07-28" },
-            { "name": "Content-Type", "value": "application/json" }
-          ]
+        "operation": "appendOrUpdate",
+        "documentId": { "mode": "id", "value": "={{ $json.sheetId }}" },
+        "sheetName": { "mode": "name", "value": "Bookings" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": ["appointment_id"],
+          "value": {
+            "appointment_id": "={{ $json.appointmentId }}",
+            "status": "confirmed",
+            "confirmed_at": "={{ $now.toISO() }}"
+          }
         },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ body: 'Appointment CONFIRMED: ' + $json.serviceType + ' on ' + $json.startTime }) }}",
-        "options": { "timeout": 5000 },
+        "options": {},
         "onError": "continueErrorOutput"
       },
-      "id": "ac6-update-ghl",
-      "name": "Update GHL Note",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "id": "ac6-log-sheet",
+      "name": "Update Booking Row to Confirmed",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
       "position": [1100, 220],
       "onError": "continueErrorOutput",
+      "notes": "Updates the SAME row workflow 03 created (matched by appointment_id) rather than adding a new one.",
       "credentials": {
-        "httpHeaderAuth": { "id": "PLACEHOLDER_GHL_CRED", "name": "Go High Level API" }
+        "googleSheetsOAuth2Api": { "id": "PLACEHOLDER_GOOGLE_SHEETS_CRED", "name": "Google Sheets account" }
       }
     },
     {
@@ -254,17 +253,17 @@
     },
     "Send Confirmation Email": {
       "main": [
-        [{ "node": "Has GHL Contact?", "type": "main", "index": 0 }],
+        [{ "node": "Has Sheet ID?", "type": "main", "index": 0 }],
         [{ "node": "Handle Failure", "type": "main", "index": 0 }]
       ]
     },
-    "Has GHL Contact?": {
+    "Has Sheet ID?": {
       "main": [
-        [{ "node": "Update GHL Note", "type": "main", "index": 0 }],
+        [{ "node": "Update Booking Row to Confirmed", "type": "main", "index": 0 }],
         [{ "node": "Mark Confirmed", "type": "main", "index": 0 }]
       ]
     },
-    "Update GHL Note": {
+    "Update Booking Row to Confirmed": {
       "main": [
         [{ "node": "Mark Confirmed", "type": "main", "index": 0 }],
         [{ "node": "Handle Failure", "type": "main", "index": 0 }]

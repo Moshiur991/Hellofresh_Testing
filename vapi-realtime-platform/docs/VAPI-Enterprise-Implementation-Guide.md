@@ -638,10 +638,10 @@ Normalize node) instead of requiring a shared schema doc that drifts.
 
 | Event path | Fired from | Payload highlights | n8n workflow |
 |---|---|---|---|
-| `call-completed` | end-of-call-report handler (non-missed calls) | callId, transcript, recordingUrl, customer, ghlContactId, durationSec | `01-call-completed.json` |
+| `call-completed` | end-of-call-report handler (non-missed calls) | callId, transcript, recordingUrl, customer, sheetId, durationSec | `01-call-completed.json` |
 | `missed-call` | end-of-call-report handler, when `endedReason` indicates voicemail/no-answer | callId, callerPhone, reason, voicemailUrl | `02-missed-call.json` |
-| `appointment-booked` | `bookAppointment` (always tentative) | appointmentId, customer, startTime, serviceType, ghlContactId | `03-appointment-booked.json` — sends an acknowledgment, never "confirmed" |
-| *(staff-triggered, not dispatched by this service)* | a GHL automation or staff action | same shape as appointment-booked | `04-appointment-confirmed.json` — the only workflow that sends the real "confirmed" message |
+| `appointment-booked` | `bookAppointment` (always tentative) | appointmentId, customer, startTime, serviceType, sheetId | `03-appointment-booked.json` — sends an acknowledgment, never "confirmed" |
+| *(staff-triggered, not dispatched by this service)* | a GHL automation (optional) or any staff action | same shape as appointment-booked | `04-appointment-confirmed.json` — the only workflow that sends the real "confirmed" message |
 | `appointment-change` | `cancelOrRescheduleAppointment`, both the "done" and "escalated" outcomes | action, status (`done`\|`escalated`), reason, newStartTime | `05-appointment-change.json` |
 | `emergency-alert` | `routeEmergency` | issueSummary, severity, action (`log_and_notify`\|`live_transfer`) | `06-emergency-alert.json` |
 | `handoff-alert` | `request_human_handoff` tool | reason, callerPhone | `07-handoff-alert.json` |
@@ -652,7 +652,8 @@ Booking confirmation is deliberately **two separate events**, not one:
 `appointment-booked` fires the instant the assistant tentatively holds a slot
 (customer gets "we'll confirm shortly," staff get a review prompt); the actual
 "you're confirmed" message only goes out later, from workflow 04, when a staff
-member (or a GHL automation tied to their action) triggers it. This keeps the
+member (or an automation tied to their action, e.g. a GHL pipeline-stage
+change if a business still uses GHL for pipeline tracking) triggers it. This keeps the
 "never auto-confirm a phone booking" rule enforced structurally — the
 automation capable of sending a firm confirmation is simply never wired to
 anything that fires automatically off the call itself.

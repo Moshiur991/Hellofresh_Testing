@@ -26,8 +26,7 @@
             { "id": "m4", "name": "callerPhone", "type": "string", "value": "={{ $json.body.callerPhone }}" },
             { "id": "m5", "name": "reason", "type": "string", "value": "={{ $json.body.reason }}" },
             { "id": "m6", "name": "voicemailUrl", "type": "string", "value": "={{ $json.body.voicemailUrl }}" },
-            { "id": "m7", "name": "ghlLocationId", "type": "string", "value": "={{ $json.body.ghlLocationId }}" },
-            { "id": "m8", "name": "frontDeskOwnerId", "type": "string", "value": "={{ $json.body.frontDeskOwnerId }}" },
+            { "id": "m7", "name": "sheetId", "type": "string", "value": "={{ $json.body.sheetId }}" },
             { "id": "m9", "name": "slackChannel", "type": "string", "value": "={{ $json.body.slackChannel || '#missed-calls' }}" }
           ]
         },
@@ -101,7 +100,7 @@
       "parameters": {
         "sendTo": "={{ $env.FRONT_DESK_ALERT_EMAIL }}",
         "subject": "=Missed call — {{ $json.businessName }}",
-        "message": "=A call from {{ $json.callerPhone }} was missed ({{ $json.reason }}).<br>{{ $json.voicemailUrl ? 'Voicemail: ' + $json.voicemailUrl : 'No voicemail left.' }}<br><br>A follow-up SMS has already been sent and a task created in GHL (if a GHL location is configured for this business).",
+        "message": "=A call from {{ $json.callerPhone }} was missed ({{ $json.reason }}).<br>{{ $json.voicemailUrl ? 'Voicemail: ' + $json.voicemailUrl : 'No voicemail left.' }}<br><br>A follow-up SMS has already been sent and this is logged in the client's Google Sheet (if one is configured for this business).",
         "options": {},
         "onError": "continueErrorOutput"
       },
@@ -122,7 +121,7 @@
           "conditions": [
             {
               "id": "g1",
-              "leftValue": "={{ $json.ghlLocationId }}",
+              "leftValue": "={{ $json.sheetId }}",
               "rightValue": "",
               "operator": { "type": "string", "operation": "notEmpty" }
             }
@@ -131,40 +130,41 @@
         },
         "options": {}
       },
-      "id": "mc13-has-ghl",
-      "name": "Has GHL Location?",
+      "id": "mc13-has-sheet",
+      "name": "Has Sheet ID?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [1100, 300],
-      "notes": "Skips GHL task creation for businesses that haven't configured a GHL location yet, instead of calling the GHL API with a blank locationId."
+      "notes": "Skips logging to this business's Google Sheet if one hasn't been set up yet."
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "https://services.leadconnectorhq.com/tasks/",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "Version", "value": "2021-07-28" },
-            { "name": "Content-Type", "value": "application/json" }
-          ]
+        "operation": "append",
+        "documentId": { "mode": "id", "value": "={{ $json.sheetId }}" },
+        "sheetName": { "mode": "name", "value": "Missed_Calls" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $now.toISO() }}",
+            "call_id": "={{ $json.callId }}",
+            "caller_phone": "={{ $json.callerPhone }}",
+            "reason": "={{ $json.reason }}",
+            "voicemail_url": "={{ $json.voicemailUrl }}",
+            "staff_notified": "yes"
+          }
         },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ locationId: $json.ghlLocationId, title: 'Call back missed caller ' + $json.callerPhone, assignedTo: $json.frontDeskOwnerId, dueDate: $now.plus({ hours: 1 }).toISO() }) }}",
-        "options": { "timeout": 5000 },
+        "options": {},
         "onError": "continueErrorOutput"
       },
-      "id": "mc7-ghl-task",
-      "name": "Create GHL Callback Task",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "id": "mc7-log-sheet",
+      "name": "Log Missed Call to Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
       "position": [1320, 220],
       "onError": "continueErrorOutput",
+      "notes": "Appends a row to this client's 'Missed_Calls' tab. Click through this node once after import to map columns to your sheet.",
       "credentials": {
-        "httpHeaderAuth": { "id": "PLACEHOLDER_GHL_CRED", "name": "Go High Level API" }
+        "googleSheetsOAuth2Api": { "id": "PLACEHOLDER_GOOGLE_SHEETS_CRED", "name": "Google Sheets account" }
       }
     },
     {
@@ -173,7 +173,7 @@
         "operation": "post",
         "select": "channel",
         "channelId": "={{ $json.slackChannel }}",
-        "text": "=📵 Missed call for *{{ $json.businessName }}* from {{ $json.callerPhone }} ({{ $json.reason }}). SMS sent, GHL task created if configured.",
+        "text": "=📵 Missed call for *{{ $json.businessName }}* from {{ $json.callerPhone }} ({{ $json.reason }}). SMS sent, logged to sheet if configured.",
         "otherOptions": {},
         "onError": "continueErrorOutput"
       },
@@ -297,17 +297,17 @@
     },
     "Internal Email Alert": {
       "main": [
-        [{ "node": "Has GHL Location?", "type": "main", "index": 0 }],
+        [{ "node": "Has Sheet ID?", "type": "main", "index": 0 }],
         [{ "node": "Handle Failure", "type": "main", "index": 0 }]
       ]
     },
-    "Has GHL Location?": {
+    "Has Sheet ID?": {
       "main": [
-        [{ "node": "Create GHL Callback Task", "type": "main", "index": 0 }],
+        [{ "node": "Log Missed Call to Sheet", "type": "main", "index": 0 }],
         [{ "node": "Notify Team", "type": "main", "index": 0 }]
       ]
     },
-    "Create GHL Callback Task": {
+    "Log Missed Call to Sheet": {
       "main": [
         [{ "node": "Notify Team", "type": "main", "index": 0 }],
         [{ "node": "Handle Failure", "type": "main", "index": 0 }]

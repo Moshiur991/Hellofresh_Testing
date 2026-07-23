@@ -28,7 +28,7 @@
             { "id": "a4", "name": "recordingUrl", "type": "string", "value": "={{ $json.body.recordingUrl }}" },
             { "id": "a5", "name": "customerName", "type": "string", "value": "={{ $json.body.customer.name }}" },
             { "id": "a6", "name": "customerPhone", "type": "string", "value": "={{ $json.body.customer.phone }}" },
-            { "id": "a7", "name": "ghlContactId", "type": "string", "value": "={{ $json.body.ghlContactId }}" },
+            { "id": "a7", "name": "sheetId", "type": "string", "value": "={{ $json.body.sheetId }}" },
             { "id": "a8", "name": "durationSec", "type": "number", "value": "={{ $json.body.durationSec }}" },
             { "id": "a9", "name": "slackChannel", "type": "string", "value": "={{ $json.body.slackChannel || '#calls' }}" }
           ]
@@ -43,19 +43,57 @@
     },
     {
       "parameters": {
-        "operation": "create",
-        "tableId": "call_transcripts",
-        "dataToSend": "autoMapInputData",
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "s1",
+              "leftValue": "={{ $json.sheetId }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n16-has-sheet-1",
+      "name": "Has Sheet ID?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [440, 300],
+      "notes": "Skips logging to this business's Google Sheet if one hasn't been set up yet (businesses.google_sheet_id blank) — the rest of the workflow (AI summary, staff follow-up) still runs."
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": { "mode": "id", "value": "={{ $json.sheetId }}" },
+        "sheetName": { "mode": "name", "value": "Call_Log" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": ["call_id"],
+          "value": {
+            "call_id": "={{ $json.callId }}",
+            "timestamp": "={{ $now.toISO() }}",
+            "customer_name": "={{ $json.customerName }}",
+            "customer_phone": "={{ $json.customerPhone }}",
+            "recording_url": "={{ $json.recordingUrl }}",
+            "duration_sec": "={{ $json.durationSec }}",
+            "transcript": "={{ $json.transcript }}"
+          }
+        },
+        "options": {},
         "onError": "continueErrorOutput"
       },
-      "id": "n3-store-transcript",
-      "name": "Store Transcript",
-      "type": "n8n-nodes-base.supabase",
-      "typeVersion": 1,
-      "position": [440, 300],
+      "id": "n17-log-call-initial",
+      "name": "Log Call to Sheet (Initial)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [660, 220],
       "onError": "continueErrorOutput",
+      "notes": "Writes the raw call record (transcript, recording, duration) to the client's own 'Call_Log' tab immediately — even if AI summarization below fails, the call itself is never lost. Click through this node once after import to map columns to your sheet.",
       "credentials": {
-        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+        "googleSheetsOAuth2Api": { "id": "PLACEHOLDER_GOOGLE_SHEETS_CRED", "name": "Google Sheets account" }
       }
     },
     {
@@ -82,7 +120,7 @@
       "name": "Generate Call Summary",
       "type": "n8n-nodes-base.openAi",
       "typeVersion": 1.3,
-      "position": [660, 300],
+      "position": [880, 300],
       "onError": "continueErrorOutput",
       "credentials": {
         "openAiApi": { "id": "PLACEHOLDER_OPENAI_CRED", "name": "OpenAI account" }
@@ -98,7 +136,7 @@
             { "id": "b3", "name": "callId", "type": "string", "value": "={{ $('Normalize Payload').item.json.callId }}" },
             { "id": "b4", "name": "customerName", "type": "string", "value": "={{ $('Normalize Payload').item.json.customerName }}" },
             { "id": "b5", "name": "customerPhone", "type": "string", "value": "={{ $('Normalize Payload').item.json.customerPhone }}" },
-            { "id": "b6", "name": "ghlContactId", "type": "string", "value": "={{ $('Normalize Payload').item.json.ghlContactId }}" },
+            { "id": "b6", "name": "sheetId", "type": "string", "value": "={{ $('Normalize Payload').item.json.sheetId }}" },
             { "id": "b7", "name": "recordingUrl", "type": "string", "value": "={{ $('Normalize Payload').item.json.recordingUrl }}" },
             { "id": "b8", "name": "durationSec", "type": "number", "value": "={{ $('Normalize Payload').item.json.durationSec }}" },
             { "id": "b9", "name": "slackChannel", "type": "string", "value": "={{ $('Normalize Payload').item.json.slackChannel }}" }
@@ -111,39 +149,9 @@
       "name": "Parse Summary",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
-      "position": [880, 300],
-      "onError": "continueErrorOutput",
-      "notes": "If the AI didn't return clean JSON this node errors instead of crashing the whole run — it now routes to Handle Failure just like every external call above it."
-    },
-    {
-      "parameters": {
-        "operation": "create",
-        "tableId": "calls",
-        "dataToSend": "defineBelow",
-        "fieldsUi": {
-          "fieldValues": [
-            { "fieldId": "business_id", "fieldValue": "={{ $json.businessId }}" },
-            { "fieldId": "call_id", "fieldValue": "={{ $json.callId }}" },
-            { "fieldId": "customer_name", "fieldValue": "={{ $json.customerName }}" },
-            { "fieldId": "customer_phone", "fieldValue": "={{ $json.customerPhone }}" },
-            { "fieldId": "summary", "fieldValue": "={{ $json.summaryData.summary }}" },
-            { "fieldId": "sentiment", "fieldValue": "={{ $json.summaryData.sentiment }}" },
-            { "fieldId": "action_items", "fieldValue": "={{ JSON.stringify($json.summaryData.action_items) }}" },
-            { "fieldId": "recording_url", "fieldValue": "={{ $json.recordingUrl }}" },
-            { "fieldId": "duration_sec", "fieldValue": "={{ $json.durationSec }}" }
-          ]
-        },
-        "onError": "continueErrorOutput"
-      },
-      "id": "n6-store-structured",
-      "name": "Store Structured Call Data",
-      "type": "n8n-nodes-base.supabase",
-      "typeVersion": 1,
       "position": [1100, 300],
       "onError": "continueErrorOutput",
-      "credentials": {
-        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
-      }
+      "notes": "If the AI didn't return clean JSON this node errors instead of crashing the whole run — it now routes to Handle Failure just like every external call above it."
     },
     {
       "parameters": {
@@ -151,8 +159,8 @@
           "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
           "conditions": [
             {
-              "id": "g1",
-              "leftValue": "={{ $json.ghlContactId }}",
+              "id": "s2",
+              "leftValue": "={{ $json.sheetId }}",
               "rightValue": "",
               "operator": { "type": "string", "operation": "notEmpty" }
             }
@@ -161,40 +169,39 @@
         },
         "options": {}
       },
-      "id": "n15-has-ghl",
-      "name": "Has GHL Contact?",
+      "id": "n18-has-sheet-2",
+      "name": "Has Sheet ID? (2)",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [1320, 300],
-      "notes": "Skips the GHL note if this business/customer doesn't have a known GHL contact ID yet, instead of calling the GHL API with a blank ID and failing."
+      "position": [1320, 300]
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "=https://services.leadconnectorhq.com/contacts/{{ $json.ghlContactId }}/notes",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "Version", "value": "2021-07-28" },
-            { "name": "Content-Type", "value": "application/json" }
-          ]
+        "operation": "appendOrUpdate",
+        "documentId": { "mode": "id", "value": "={{ $json.sheetId }}" },
+        "sheetName": { "mode": "name", "value": "Call_Log" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": ["call_id"],
+          "value": {
+            "call_id": "={{ $json.callId }}",
+            "summary": "={{ $json.summaryData.summary }}",
+            "sentiment": "={{ $json.summaryData.sentiment }}",
+            "action_items": "={{ $json.summaryData.action_items.join('; ') }}"
+          }
         },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ body: $json.summaryData.summary }) }}",
-        "options": { "timeout": 5000 },
+        "options": {},
         "onError": "continueErrorOutput"
       },
-      "id": "n7-update-ghl",
-      "name": "Update GHL Contact",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "id": "n19-log-call-summary",
+      "name": "Log Call to Sheet (Add Summary)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
       "position": [1540, 220],
       "onError": "continueErrorOutput",
+      "notes": "Updates the SAME row from 'Log Call to Sheet (Initial)' (matched by call_id) with the AI summary/sentiment/action items, rather than creating a second row.",
       "credentials": {
-        "httpHeaderAuth": { "id": "PLACEHOLDER_GHL_CRED", "name": "Go High Level API" }
+        "googleSheetsOAuth2Api": { "id": "PLACEHOLDER_GOOGLE_SHEETS_CRED", "name": "Google Sheets account" }
       }
     },
     {
@@ -266,6 +273,7 @@
       "typeVersion": 1,
       "position": [2200, 180],
       "onError": "continueErrorOutput",
+      "notes": "Internal staff task tracking stays in Supabase — this is a platform-side to-do list, not part of the client-visible call history in their Sheet.",
       "credentials": {
         "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
       }
@@ -359,8 +367,14 @@
   ],
   "connections": {
     "Call Completed Trigger": { "main": [[{ "node": "Normalize Payload", "type": "main", "index": 0 }]] },
-    "Normalize Payload": { "main": [[{ "node": "Store Transcript", "type": "main", "index": 0 }]] },
-    "Store Transcript": {
+    "Normalize Payload": { "main": [[{ "node": "Has Sheet ID?", "type": "main", "index": 0 }]] },
+    "Has Sheet ID?": {
+      "main": [
+        [{ "node": "Log Call to Sheet (Initial)", "type": "main", "index": 0 }],
+        [{ "node": "Generate Call Summary", "type": "main", "index": 0 }]
+      ]
+    },
+    "Log Call to Sheet (Initial)": {
       "main": [
         [{ "node": "Generate Call Summary", "type": "main", "index": 0 }],
         [{ "node": "Handle Failure", "type": "main", "index": 0 }]
@@ -374,23 +388,17 @@
     },
     "Parse Summary": {
       "main": [
-        [{ "node": "Store Structured Call Data", "type": "main", "index": 0 }],
+        [{ "node": "Has Sheet ID? (2)", "type": "main", "index": 0 }],
         [{ "node": "Handle Failure", "type": "main", "index": 0 }]
       ]
     },
-    "Store Structured Call Data": {
+    "Has Sheet ID? (2)": {
       "main": [
-        [{ "node": "Has GHL Contact?", "type": "main", "index": 0 }],
-        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
-      ]
-    },
-    "Has GHL Contact?": {
-      "main": [
-        [{ "node": "Update GHL Contact", "type": "main", "index": 0 }],
+        [{ "node": "Log Call to Sheet (Add Summary)", "type": "main", "index": 0 }],
         [{ "node": "Needs Follow-up?", "type": "main", "index": 0 }]
       ]
     },
-    "Update GHL Contact": {
+    "Log Call to Sheet (Add Summary)": {
       "main": [
         [{ "node": "Needs Follow-up?", "type": "main", "index": 0 }],
         [{ "node": "Handle Failure", "type": "main", "index": 0 }]

@@ -8,7 +8,7 @@
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.1,
       "position": [0, 300],
-      "notes": "Invoked by each business's cloned SHELL workflow, which holds the real Schedule Trigger (per-business cron/timezone) and calls this master via an Execute Workflow node, passing businessId, ghlLocationId, followUpDaysAfter, reviewLink, slackChannel."
+      "notes": "Invoked by each business's cloned SHELL workflow, which holds the real Schedule Trigger (per-business cron/timezone) and calls this master via an Execute Workflow node, passing businessId, sheetId, followUpDaysAfter, reviewLink, slackChannel."
     },
     {
       "parameters": {
@@ -17,7 +17,7 @@
           "assignments": [
             { "id": "p1", "name": "businessId", "type": "string", "value": "={{ $json.businessId }}" },
             { "id": "p2", "name": "businessName", "type": "string", "value": "={{ $json.businessName }}" },
-            { "id": "p3", "name": "ghlLocationId", "type": "string", "value": "={{ $json.ghlLocationId }}" },
+            { "id": "p3", "name": "sheetId", "type": "string", "value": "={{ $json.sheetId }}" },
             { "id": "p4", "name": "followUpDaysAfter", "type": "number", "value": "={{ $json.followUpDaysAfter || 2 }}" },
             { "id": "p5", "name": "reviewLink", "type": "string", "value": "={{ $json.reviewLink }}" },
             { "id": "p6", "name": "slackChannel", "type": "string", "value": "={{ $json.slackChannel || '#followups' }}" }

@@ -26,8 +26,7 @@
             { "id": "h3", "name": "callerPhone", "type": "string", "value": "={{ $json.body.callerPhone }}" },
             { "id": "h4", "name": "callerEmail", "type": "string", "value": "={{ $json.body.callerEmail }}" },
             { "id": "h5", "name": "reason", "type": "string", "value": "={{ $json.body.reason }}" },
-            { "id": "h6", "name": "ghlLocationId", "type": "string", "value": "={{ $json.body.ghlLocationId }}" },
-            { "id": "h7", "name": "frontDeskOwnerId", "type": "string", "value": "={{ $json.body.frontDeskOwnerId }}" },
+            { "id": "h6", "name": "sheetId", "type": "string", "value": "={{ $json.body.sheetId }}" },
             { "id": "h8", "name": "slackChannel", "type": "string", "value": "={{ $json.body.slackChannel || '#handoffs' }}" }
           ]
         },
@@ -64,7 +63,7 @@
           "conditions": [
             {
               "id": "g1",
-              "leftValue": "={{ $json.ghlLocationId }}",
+              "leftValue": "={{ $json.sheetId }}",
               "rightValue": "",
               "operator": { "type": "string", "operation": "notEmpty" }
             }
@@ -73,39 +72,38 @@
         },
         "options": {}
       },
-      "id": "hd10-has-ghl",
-      "name": "Has GHL Location?",
+      "id": "hd10-has-sheet",
+      "name": "Has Sheet ID?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [660, 300]
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "https://services.leadconnectorhq.com/tasks/",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "Version", "value": "2021-07-28" },
-            { "name": "Content-Type", "value": "application/json" }
-          ]
+        "operation": "append",
+        "documentId": { "mode": "id", "value": "={{ $json.sheetId }}" },
+        "sheetName": { "mode": "name", "value": "Handoffs" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $now.toISO() }}",
+            "caller_phone": "={{ $json.callerPhone }}",
+            "caller_email": "={{ $json.callerEmail }}",
+            "reason": "={{ $json.reason }}"
+          }
         },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ locationId: $json.ghlLocationId, title: 'Call back ' + $json.callerPhone + ' — ' + $json.reason, assignedTo: $json.frontDeskOwnerId, dueDate: $now.plus({ hours: 2 }).toISO() }) }}",
-        "options": { "timeout": 5000 },
+        "options": {},
         "onError": "continueErrorOutput"
       },
-      "id": "hd5-ghl-task",
-      "name": "Create GHL Callback Task",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "id": "hd5-log-sheet",
+      "name": "Log Handoff to Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
       "position": [880, 220],
       "onError": "continueErrorOutput",
+      "notes": "Appends a row to this client's 'Handoffs' tab. Click through this node once after import to map columns.",
       "credentials": {
-        "httpHeaderAuth": { "id": "PLACEHOLDER_GHL_CRED", "name": "Go High Level API" }
+        "googleSheetsOAuth2Api": { "id": "PLACEHOLDER_GOOGLE_SHEETS_CRED", "name": "Google Sheets account" }
       }
     },
     {
@@ -218,17 +216,17 @@
     "Normalize Payload": { "main": [[{ "node": "Email Front Desk", "type": "main", "index": 0 }]] },
     "Email Front Desk": {
       "main": [
-        [{ "node": "Has GHL Location?", "type": "main", "index": 0 }],
+        [{ "node": "Has Sheet ID?", "type": "main", "index": 0 }],
         [{ "node": "Handle Failure", "type": "main", "index": 0 }]
       ]
     },
-    "Has GHL Location?": {
+    "Has Sheet ID?": {
       "main": [
-        [{ "node": "Create GHL Callback Task", "type": "main", "index": 0 }],
+        [{ "node": "Log Handoff to Sheet", "type": "main", "index": 0 }],
         [{ "node": "Notify Team", "type": "main", "index": 0 }]
       ]
     },
-    "Create GHL Callback Task": {
+    "Log Handoff to Sheet": {
       "main": [
         [{ "node": "Notify Team", "type": "main", "index": 0 }],
         [{ "node": "Handle Failure", "type": "main", "index": 0 }]

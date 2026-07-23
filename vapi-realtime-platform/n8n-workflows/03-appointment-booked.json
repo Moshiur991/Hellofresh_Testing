@@ -29,7 +29,7 @@
             { "id": "a5", "name": "customerEmail", "type": "string", "value": "={{ $json.body.customer.email }}" },
             { "id": "a6", "name": "startTime", "type": "string", "value": "={{ $json.body.startTime }}" },
             { "id": "a7", "name": "serviceType", "type": "string", "value": "={{ $json.body.serviceType }}" },
-            { "id": "a9", "name": "ghlContactId", "type": "string", "value": "={{ $json.body.ghlContactId }}" },
+            { "id": "a9", "name": "sheetId", "type": "string", "value": "={{ $json.body.sheetId }}" },
             { "id": "a11", "name": "slackChannel", "type": "string", "value": "={{ $json.body.slackChannel || '#bookings' }}" }
           ]
         },
@@ -67,7 +67,7 @@
           "conditions": [
             {
               "id": "g1",
-              "leftValue": "={{ $json.ghlContactId }}",
+              "leftValue": "={{ $json.sheetId }}",
               "rightValue": "",
               "operator": { "type": "string", "operation": "notEmpty" }
             }
@@ -76,39 +76,42 @@
         },
         "options": {}
       },
-      "id": "ab12-has-ghl",
-      "name": "Has GHL Contact?",
+      "id": "ab12-has-sheet",
+      "name": "Has Sheet ID?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [660, 300]
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "=https://services.leadconnectorhq.com/contacts/{{ $json.ghlContactId }}/notes",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "Version", "value": "2021-07-28" },
-            { "name": "Content-Type", "value": "application/json" }
-          ]
+        "operation": "appendOrUpdate",
+        "documentId": { "mode": "id", "value": "={{ $json.sheetId }}" },
+        "sheetName": { "mode": "name", "value": "Bookings" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": ["appointment_id"],
+          "value": {
+            "appointment_id": "={{ $json.appointmentId }}",
+            "timestamp": "={{ $now.toISO() }}",
+            "customer_name": "={{ $json.customerName }}",
+            "customer_phone": "={{ $json.customerPhone }}",
+            "service": "={{ $json.serviceType }}",
+            "start_time": "={{ $json.startTime }}",
+            "status": "tentative"
+          }
         },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ body: 'Tentative booking (awaiting staff confirmation): ' + $json.serviceType + ' on ' + $json.startTime }) }}",
-        "options": { "timeout": 5000 },
+        "options": {},
         "onError": "continueErrorOutput"
       },
-      "id": "ab6-update-ghl",
-      "name": "Add GHL Note",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "id": "ab6-log-sheet",
+      "name": "Log Booking to Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
       "position": [880, 220],
       "onError": "continueErrorOutput",
+      "notes": "Writes/updates this appointment's row in the client's 'Bookings' tab, matched by appointment_id — workflow 04 (Appointment Confirmed) updates the same row's status later. Click through this node once after import to map columns.",
       "credentials": {
-        "httpHeaderAuth": { "id": "PLACEHOLDER_GHL_CRED", "name": "Go High Level API" }
+        "googleSheetsOAuth2Api": { "id": "PLACEHOLDER_GOOGLE_SHEETS_CRED", "name": "Google Sheets account" }
       }
     },
     {
@@ -223,17 +226,17 @@
     "Normalize Payload": { "main": [[{ "node": "Send Tentative-Hold SMS", "type": "main", "index": 0 }]] },
     "Send Tentative-Hold SMS": {
       "main": [
-        [{ "node": "Has GHL Contact?", "type": "main", "index": 0 }],
+        [{ "node": "Has Sheet ID?", "type": "main", "index": 0 }],
         [{ "node": "Handle Failure", "type": "main", "index": 0 }]
       ]
     },
-    "Has GHL Contact?": {
+    "Has Sheet ID?": {
       "main": [
-        [{ "node": "Add GHL Note", "type": "main", "index": 0 }],
+        [{ "node": "Log Booking to Sheet", "type": "main", "index": 0 }],
         [{ "node": "Notify Team", "type": "main", "index": 0 }]
       ]
     },
-    "Add GHL Note": {
+    "Log Booking to Sheet": {
       "main": [
         [{ "node": "Notify Team", "type": "main", "index": 0 }],
         [{ "node": "Handle Failure", "type": "main", "index": 0 }]
