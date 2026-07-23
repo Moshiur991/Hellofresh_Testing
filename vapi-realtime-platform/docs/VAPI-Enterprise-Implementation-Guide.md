@@ -464,7 +464,7 @@ matter):
   "durationSeconds": 142, "recordingUrl": "...", "summary": "...",
   "endedReason": "...", "transcript": "..." } }
 ```
-→ one fast `calls` upsert (so a row always exists), then `dispatchToN8n('call.completed', ...)` — everything else (§15) is n8n's job.
+→ one fast `calls` upsert (so a row always exists), then `dispatchToN8n('call-completed'|'missed-call', ...)` — everything else (§15) is n8n's job.
 
 **Defensive parsing:** both `toolCallList` and `toolCalls`, and both string and
 object `arguments`, are handled — Vapi's exact payload shape has drifted between
@@ -628,29 +628,44 @@ only if staleness windows become a real complaint.
 
 ## 15. n8n boundary — the background automation handoff contract
 
-This service never waits on n8n. Every `dispatchToN8n(event, payload)` call is
-fire-and-forget (`integrations/n8nDispatcher.ts`) to
-`N8N_BACKGROUND_WEBHOOK_URL`, shaped as:
+This service never waits on n8n. Every `dispatchToN8n(path, payload)` call
+(`integrations/n8nDispatcher.ts`) is fire-and-forget, POSTing the **flat**
+payload each n8n workflow's own `$json.body.*` fields expect — directly, no
+envelope wrapper — to `${N8N_BASE_URL}/<event-path>`. One event = one n8n
+webhook = one "[MASTER] ..." workflow in `n8n-workflows/`; this keeps each
+workflow's input contract self-documenting (open the workflow, read the
+Normalize node) instead of requiring a shared schema doc that drifts.
 
-```json
-{ "event": "appointment.booked", "occurredAt": "...", "payload": { ... } }
-```
-
-| Event | Fired from | Payload highlights | Maps to (existing n8n workflows in this repo) |
+| Event path | Fired from | Payload highlights | n8n workflow |
 |---|---|---|---|
-| `call.completed` | end-of-call-report handler | full call object, transcript, summary | transcript storage, call summary, Conversations row, Patient_Records update — pattern already in `version-5-voice-assistant-vapi.json` |
-| `appointment.booked` | `bookAppointment` | appointmentId, customer, service, startIso | confirmation SMS/Email, CRM/Calendar sync — `09-twilio-sms-helper.json`, `08-staff-email-helper.json` |
-| `appointment.cancelled` / `appointment.rescheduled` | `cancelOrRescheduleAppointment` | phone, business | `04-cancel-reschedule-module.json` pattern |
-| `appointment.change_escalated` | same, on 48h/not-found/no-new-time | reason | Escalations row + staff notify — `06-human-handoff-module.json` pattern |
-| `emergency.logged` | `routeEmergency` | issueSummary, action | `05-emergency-module.json` pattern, staff SMS/email |
-| `handoff.requested` | `request_human_handoff` tool | reason, phone | `06-human-handoff-module.json` |
+| `call-completed` | end-of-call-report handler (non-missed calls) | callId, transcript, recordingUrl, customer, ghlContactId, durationSec | `01-call-completed.json` |
+| `missed-call` | end-of-call-report handler, when `endedReason` indicates voicemail/no-answer | callId, callerPhone, reason, voicemailUrl | `02-missed-call.json` |
+| `appointment-booked` | `bookAppointment` (always tentative) | appointmentId, customer, startTime, serviceType, ghlContactId | `03-appointment-booked.json` — sends an acknowledgment, never "confirmed" |
+| *(staff-triggered, not dispatched by this service)* | a GHL automation or staff action | same shape as appointment-booked | `04-appointment-confirmed.json` — the only workflow that sends the real "confirmed" message |
+| `appointment-change` | `cancelOrRescheduleAppointment`, both the "done" and "escalated" outcomes | action, status (`done`\|`escalated`), reason, newStartTime | `05-appointment-change.json` |
+| `emergency-alert` | `routeEmergency` | issueSummary, severity, action (`log_and_notify`\|`live_transfer`) | `06-emergency-alert.json` |
+| `handoff-alert` | `request_human_handoff` tool | reason, callerPhone | `07-handoff-alert.json` |
+| *(admin/staff-triggered, not this service)* | knowledge document upload | businessId, documentTitle, text/file | `08-kb-upload.json` — also calls back into `/internal/cache/flush` on this service when done |
+| *(n8n-scheduled, not this service)* | per-business cron (shell workflow) | businessId, followUpDaysAfter, reviewLink | `09-patient-followup.json` |
 
-This is intentionally the **only** integration surface between the two systems —
-n8n never calls back into this service synchronously during a live call, and this
+Booking confirmation is deliberately **two separate events**, not one:
+`appointment-booked` fires the instant the assistant tentatively holds a slot
+(customer gets "we'll confirm shortly," staff get a review prompt); the actual
+"you're confirmed" message only goes out later, from workflow 04, when a staff
+member (or a GHL automation tied to their action) triggers it. This keeps the
+"never auto-confirm a phone booking" rule enforced structurally — the
+automation capable of sending a firm confirmation is simply never wired to
+anything that fires automatically off the call itself.
+
+This is intentionally the **only** integration surface between the two
+systems — n8n never calls back into this service synchronously during a live
+call (the one exception, `/internal/cache/flush`, is a fire-and-forget
+best-effort cache invalidation with no bearing on call handling), and this
 service never runs an n8n sub-workflow inline. If n8n is down, calls still get
 answered, booked, and logged; only the notification/analytics layer is delayed
-until n8n recovers (its own retry/error-workflow responsibility, already designed
-in the existing n8n build's `Error_Log` pattern).
+until n8n recovers (its own retry/error-workflow responsibility — see each
+workflow's `Handle Failure` → `workflow_errors` → `#automation-alerts` chain
+in `n8n-workflows/`).
 
 ---
 
@@ -697,8 +712,9 @@ already have built.
 
 2. **Configure and deploy `vapi-realtime-platform/`.**
    - `cp .env.example .env`, fill in every value (Supabase, Redis, Pinecone,
-     OpenAI [embeddings only], Google OAuth2 client id/secret, `N8N_BACKGROUND_WEBHOOK_URL`
-     + shared secret, and a strong random `VAPI_WEBHOOK_SECRET`).
+     OpenAI [embeddings only], Google OAuth2 client id/secret, `N8N_BASE_URL`
+     + shared secret, `INTERNAL_API_SHARED_SECRET`, and a strong random
+     `VAPI_WEBHOOK_SECRET`).
    - `npm install && npm run build && npm test && npm run typecheck` locally to
      confirm a clean baseline.
    - Deploy (`fly deploy` with the provided `fly.toml`/`Dockerfile`, or your
@@ -740,10 +756,9 @@ already have built.
 7. **Repeat steps 3–6 per additional business.** Nothing in steps 1–2 repeats —
    that's the entire point of the shared-service, tenant-resolved design.
 
-8. **Confirm the n8n side is wired** to `N8N_BACKGROUND_WEBHOOK_URL` and is
-   listening for the events in §15's table — this repo's existing
-   `dental-clinic-chatbot/workflows/` and `n8n-workflows/` are the reference
-   implementation for what happens after this service fires each event.
+8. **Import the 9 workflows in `vapi-realtime-platform/n8n-workflows/`** (see
+   that folder's own README for the plain-language walkthrough), and confirm
+   `N8N_BASE_URL` on this service points at your n8n instance's webhook base.
 
 ---
 

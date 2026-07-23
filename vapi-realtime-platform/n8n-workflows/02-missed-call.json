@@ -1,0 +1,328 @@
+{
+  "name": "[MASTER] Missed Call",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "missed-call",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "mc1-webhook",
+      "name": "Missed Call Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "missed-call-master"
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "m1", "name": "businessId", "type": "string", "value": "={{ $json.body.businessId }}" },
+            { "id": "m2", "name": "callId", "type": "string", "value": "={{ $json.body.callId }}" },
+            { "id": "m3", "name": "businessName", "type": "string", "value": "={{ $json.body.businessName }}" },
+            { "id": "m4", "name": "callerPhone", "type": "string", "value": "={{ $json.body.callerPhone }}" },
+            { "id": "m5", "name": "reason", "type": "string", "value": "={{ $json.body.reason }}" },
+            { "id": "m6", "name": "voicemailUrl", "type": "string", "value": "={{ $json.body.voicemailUrl }}" },
+            { "id": "m7", "name": "ghlLocationId", "type": "string", "value": "={{ $json.body.ghlLocationId }}" },
+            { "id": "m8", "name": "frontDeskOwnerId", "type": "string", "value": "={{ $json.body.frontDeskOwnerId }}" },
+            { "id": "m9", "name": "slackChannel", "type": "string", "value": "={{ $json.body.slackChannel || '#missed-calls' }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "mc2-normalize",
+      "name": "Normalize Payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "n1",
+              "leftValue": "={{ $json.reason }}",
+              "rightValue": "voicemail",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "mc3-if-voicemail",
+      "name": "Has Voicemail?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "from": "={{ $env.TWILIO_FROM_NUMBER }}",
+        "to": "={{ $json.callerPhone }}",
+        "message": "=Hi, sorry we missed your call to {{ $json.businessName }}! We got your voicemail and someone will call you back shortly. You can also text us here.",
+        "onError": "continueErrorOutput"
+      },
+      "id": "mc4-sms-voicemail",
+      "name": "Send SMS (Voicemail Left)",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [660, 180],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "twilioApi": { "id": "PLACEHOLDER_TWILIO_CRED", "name": "Twilio account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "from": "={{ $env.TWILIO_FROM_NUMBER }}",
+        "to": "={{ $json.callerPhone }}",
+        "message": "=Hi, sorry we missed your call to {{ $json.businessName }}! Reply to this text and we'll help right away, or we'll call you back shortly.",
+        "onError": "continueErrorOutput"
+      },
+      "id": "mc5-sms-noanswer",
+      "name": "Send SMS (No Answer)",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [660, 420],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "twilioApi": { "id": "PLACEHOLDER_TWILIO_CRED", "name": "Twilio account" }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $env.FRONT_DESK_ALERT_EMAIL }}",
+        "subject": "=Missed call — {{ $json.businessName }}",
+        "message": "=A call from {{ $json.callerPhone }} was missed ({{ $json.reason }}).<br>{{ $json.voicemailUrl ? 'Voicemail: ' + $json.voicemailUrl : 'No voicemail left.' }}<br><br>A follow-up SMS has already been sent and a task created in GHL (if a GHL location is configured for this business).",
+        "options": {},
+        "onError": "continueErrorOutput"
+      },
+      "id": "mc6-email-alert",
+      "name": "Internal Email Alert",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [880, 300],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "gmailOAuth2": { "id": "PLACEHOLDER_GMAIL_CRED", "name": "Gmail account" }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "g1",
+              "leftValue": "={{ $json.ghlLocationId }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "mc13-has-ghl",
+      "name": "Has GHL Location?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1100, 300],
+      "notes": "Skips GHL task creation for businesses that haven't configured a GHL location yet, instead of calling the GHL API with a blank locationId."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://services.leadconnectorhq.com/tasks/",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Version", "value": "2021-07-28" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ locationId: $json.ghlLocationId, title: 'Call back missed caller ' + $json.callerPhone, assignedTo: $json.frontDeskOwnerId, dueDate: $now.plus({ hours: 1 }).toISO() }) }}",
+        "options": { "timeout": 5000 },
+        "onError": "continueErrorOutput"
+      },
+      "id": "mc7-ghl-task",
+      "name": "Create GHL Callback Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 220],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": { "id": "PLACEHOLDER_GHL_CRED", "name": "Go High Level API" }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": "={{ $json.slackChannel }}",
+        "text": "=📵 Missed call for *{{ $json.businessName }}* from {{ $json.callerPhone }} ({{ $json.reason }}). SMS sent, GHL task created if configured.",
+        "otherOptions": {},
+        "onError": "continueErrorOutput"
+      },
+      "id": "mc8-slack-notify",
+      "name": "Notify Team",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1540, 300],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "slackApi": { "id": "PLACEHOLDER_SLACK_CRED", "name": "Slack account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "audit_log",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "business_id", "fieldValue": "={{ $json.businessId }}" },
+            { "fieldId": "event_type", "fieldValue": "missed_call_processed" },
+            { "fieldId": "reference_id", "fieldValue": "={{ $json.callId }}" }
+          ]
+        }
+      },
+      "id": "mc9-audit-log",
+      "name": "Audit Log",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1760, 300],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "workflow_execution_log",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "workflow_name", "fieldValue": "missed-call" },
+            { "fieldId": "business_id", "fieldValue": "={{ $json.businessId }}" },
+            { "fieldId": "reference_id", "fieldValue": "={{ $json.callId }}" },
+            { "fieldId": "status", "fieldValue": "success" }
+          ]
+        }
+      },
+      "id": "mc10-workflow-log",
+      "name": "Workflow Log",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1980, 300],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "workflow_errors",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "workflow_name", "fieldValue": "missed-call" },
+            { "fieldId": "node_name", "fieldValue": "={{ $json.error?.node?.name || 'unknown' }}" },
+            { "fieldId": "error_message", "fieldValue": "={{ $json.error?.message || 'unknown error' }}" },
+            { "fieldId": "raw_payload", "fieldValue": "={{ JSON.stringify($json) }}" }
+          ]
+        }
+      },
+      "id": "mc11-handle-failure",
+      "name": "Handle Failure",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [880, 500],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": "#automation-alerts",
+        "text": "=⚠️ missed-call workflow failed for call {{ $json.callId || 'unknown' }} — check workflow_errors table.",
+        "otherOptions": {}
+      },
+      "id": "mc12-alert-slack",
+      "name": "Alert Engineering",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1100, 500],
+      "credentials": {
+        "slackApi": { "id": "PLACEHOLDER_SLACK_CRED", "name": "Slack account" }
+      }
+    }
+  ],
+  "connections": {
+    "Missed Call Trigger": { "main": [[{ "node": "Normalize Payload", "type": "main", "index": 0 }]] },
+    "Normalize Payload": { "main": [[{ "node": "Has Voicemail?", "type": "main", "index": 0 }]] },
+    "Has Voicemail?": {
+      "main": [
+        [{ "node": "Send SMS (Voicemail Left)", "type": "main", "index": 0 }],
+        [{ "node": "Send SMS (No Answer)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send SMS (Voicemail Left)": {
+      "main": [
+        [{ "node": "Internal Email Alert", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send SMS (No Answer)": {
+      "main": [
+        [{ "node": "Internal Email Alert", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Internal Email Alert": {
+      "main": [
+        [{ "node": "Has GHL Location?", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Has GHL Location?": {
+      "main": [
+        [{ "node": "Create GHL Callback Task", "type": "main", "index": 0 }],
+        [{ "node": "Notify Team", "type": "main", "index": 0 }]
+      ]
+    },
+    "Create GHL Callback Task": {
+      "main": [
+        [{ "node": "Notify Team", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Notify Team": {
+      "main": [
+        [{ "node": "Audit Log", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Audit Log": { "main": [[{ "node": "Workflow Log", "type": "main", "index": 0 }]] },
+    "Handle Failure": { "main": [[{ "node": "Alert Engineering", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

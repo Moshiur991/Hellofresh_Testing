@@ -1,5 +1,6 @@
 import { supabase } from '../db/supabase.js';
-import { dispatchToN8n } from '../integrations/n8nDispatcher.js';
+import { dispatchToN8n, N8N_PATHS } from '../integrations/n8nDispatcher.js';
+import { getBusinessNotifyConfig } from './businessConfigService.js';
 import type { FastifyBaseLogger } from 'fastify';
 
 // Vertical-specific red-flag keywords that force a live transfer regardless of the
@@ -45,11 +46,25 @@ export async function routeEmergency(
   });
 
   // Staff SMS/email/Slack alert is background — never blocks the caller's spoken reply.
-  dispatchToN8n(
-    'emergency.logged',
-    { businessId: params.businessId, locationId: params.locationId, phone: params.phone, issueSummary: params.issueSummary, action },
-    logger,
-  );
+  getBusinessNotifyConfig(params.businessId)
+    .then((business) => {
+      dispatchToN8n(
+        N8N_PATHS.emergencyAlert,
+        {
+          businessId: params.businessId,
+          businessName: business.name,
+          slackChannel: business.slackChannel ?? '',
+          ghlLocationId: business.ghlLocationId ?? '',
+          frontDeskOwnerId: business.frontDeskOwnerId ?? '',
+          callerPhone: params.phone ?? '',
+          issueSummary: params.issueSummary,
+          severity: params.severity ?? (forceTransfer ? 'critical' : 'unspecified'),
+          action,
+        },
+        logger,
+      );
+    })
+    .catch((err) => logger?.error({ err }, 'failed to load business config for emergency-alert notify'));
 
   return action === 'live_transfer'
     ? { action, transferNumber: params.transferNumber, message: 'Connecting you to our team right now.' }

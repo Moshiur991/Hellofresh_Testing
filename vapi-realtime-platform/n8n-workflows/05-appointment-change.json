@@ -1,0 +1,303 @@
+{
+  "name": "[MASTER] Appointment Change (Cancel/Reschedule)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "appointment-change",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "cg1-webhook",
+      "name": "Appointment Change Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "appointment-change-master",
+      "notes": "Fires for BOTH cancel and reschedule requests from the phone assistant. `status` = 'done' means the calendar was already changed directly; 'escalated' means it was too close to the appointment (or couldn't be matched) and staff need to handle it personally — never claim it's done in that case."
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "d1", "name": "businessId", "type": "string", "value": "={{ $json.body.businessId }}" },
+            { "id": "d2", "name": "businessName", "type": "string", "value": "={{ $json.body.businessName }}" },
+            { "id": "d3", "name": "customerName", "type": "string", "value": "={{ $json.body.customer.name }}" },
+            { "id": "d4", "name": "customerPhone", "type": "string", "value": "={{ $json.body.customer.phone }}" },
+            { "id": "d5", "name": "action", "type": "string", "value": "={{ $json.body.action }}" },
+            { "id": "d6", "name": "status", "type": "string", "value": "={{ $json.body.status }}" },
+            { "id": "d7", "name": "reason", "type": "string", "value": "={{ $json.body.reason || '' }}" },
+            { "id": "d8", "name": "newStartTime", "type": "string", "value": "={{ $json.body.newStartTime || '' }}" },
+            { "id": "d9", "name": "ghlContactId", "type": "string", "value": "={{ $json.body.ghlContactId }}" },
+            { "id": "d10", "name": "slackChannel", "type": "string", "value": "={{ $json.body.slackChannel || '#appointment-changes' }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "cg2-normalize",
+      "name": "Normalize Payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "e1",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "escalated",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "cg3-is-escalated",
+      "name": "Is Escalated?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "from": "={{ $env.TWILIO_FROM_NUMBER }}",
+        "to": "={{ $json.customerPhone }}",
+        "message": "=Hi {{ $json.customerName }}, we've received your {{ $json.action }} request for {{ $json.businessName }}. Since it's close to the appointment time, our team will follow up directly to confirm — this isn't done automatically yet.",
+        "onError": "continueErrorOutput"
+      },
+      "id": "cg4-sms-escalated",
+      "name": "Send Escalation Ack SMS",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [660, 180],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "twilioApi": { "id": "PLACEHOLDER_TWILIO_CRED", "name": "Twilio account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "from": "={{ $env.TWILIO_FROM_NUMBER }}",
+        "to": "={{ $json.customerPhone }}",
+        "message": "=Hi {{ $json.customerName }}, your appointment with {{ $json.businessName }} {{ $json.action === 'cancel' ? 'has been cancelled as requested.' : 'has been moved to ' + $json.newStartTime + '.' }}",
+        "onError": "continueErrorOutput"
+      },
+      "id": "cg5-sms-done",
+      "name": "Send Change Confirmation SMS",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [660, 420],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "twilioApi": { "id": "PLACEHOLDER_TWILIO_CRED", "name": "Twilio account" }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "g1",
+              "leftValue": "={{ $json.ghlContactId }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "cg12-has-ghl",
+      "name": "Has GHL Contact?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://services.leadconnectorhq.com/contacts/{{ $json.ghlContactId }}/notes",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Version", "value": "2021-07-28" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ body: (($json.status === 'escalated') ? 'NEEDS STAFF ACTION — ' : '') + $json.action + ' request, status: ' + $json.status + ($json.reason ? (' — ' + $json.reason) : '') }) }}",
+        "options": { "timeout": 5000 },
+        "onError": "continueErrorOutput"
+      },
+      "id": "cg6-update-ghl",
+      "name": "Add GHL Note",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 220],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": { "id": "PLACEHOLDER_GHL_CRED", "name": "Go High Level API" }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": "={{ $json.slackChannel }}",
+        "text": "={{ $json.status === 'escalated' ? '🚨 *Needs staff action* — ' : '✅ ' }}{{ $json.customerName }} ({{ $json.customerPhone }}) — {{ $json.action }} for *{{ $json.businessName }}*. Status: {{ $json.status }}.{{ $json.reason ? ('\\nReason: ' + $json.reason) : '' }}",
+        "otherOptions": {},
+        "onError": "continueErrorOutput"
+      },
+      "id": "cg13-notify-team",
+      "name": "Notify Team",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1320, 300],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "slackApi": { "id": "PLACEHOLDER_SLACK_CRED", "name": "Slack account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "audit_log",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "business_id", "fieldValue": "={{ $json.businessId }}" },
+            { "fieldId": "event_type", "fieldValue": "={{ 'appointment_' + $json.action + '_' + $json.status }}" }
+          ]
+        }
+      },
+      "id": "cg8-audit-log",
+      "name": "Audit Log",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1540, 300],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "workflow_execution_log",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "workflow_name", "fieldValue": "appointment-change" },
+            { "fieldId": "business_id", "fieldValue": "={{ $json.businessId }}" },
+            { "fieldId": "status", "fieldValue": "success" }
+          ]
+        }
+      },
+      "id": "cg9-workflow-log",
+      "name": "Workflow Log",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1760, 300],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "workflow_errors",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "workflow_name", "fieldValue": "appointment-change" },
+            { "fieldId": "node_name", "fieldValue": "={{ $json.error?.node?.name || 'unknown' }}" },
+            { "fieldId": "error_message", "fieldValue": "={{ $json.error?.message || 'unknown error' }}" },
+            { "fieldId": "raw_payload", "fieldValue": "={{ JSON.stringify($json) }}" }
+          ]
+        }
+      },
+      "id": "cg10-handle-failure",
+      "name": "Handle Failure",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [880, 500],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": "#automation-alerts",
+        "text": "=⚠️ appointment-change workflow failed for business {{ $json.businessId || 'unknown' }} — check workflow_errors table.",
+        "otherOptions": {}
+      },
+      "id": "cg11-alert-slack",
+      "name": "Alert Engineering",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1100, 500],
+      "credentials": {
+        "slackApi": { "id": "PLACEHOLDER_SLACK_CRED", "name": "Slack account" }
+      }
+    }
+  ],
+  "connections": {
+    "Appointment Change Trigger": { "main": [[{ "node": "Normalize Payload", "type": "main", "index": 0 }]] },
+    "Normalize Payload": { "main": [[{ "node": "Is Escalated?", "type": "main", "index": 0 }]] },
+    "Is Escalated?": {
+      "main": [
+        [{ "node": "Send Escalation Ack SMS", "type": "main", "index": 0 }],
+        [{ "node": "Send Change Confirmation SMS", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send Escalation Ack SMS": {
+      "main": [
+        [{ "node": "Has GHL Contact?", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send Change Confirmation SMS": {
+      "main": [
+        [{ "node": "Has GHL Contact?", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Has GHL Contact?": {
+      "main": [
+        [{ "node": "Add GHL Note", "type": "main", "index": 0 }],
+        [{ "node": "Notify Team", "type": "main", "index": 0 }]
+      ]
+    },
+    "Add GHL Note": {
+      "main": [
+        [{ "node": "Notify Team", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Notify Team": {
+      "main": [
+        [{ "node": "Audit Log", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Audit Log": { "main": [[{ "node": "Workflow Log", "type": "main", "index": 0 }]] },
+    "Handle Failure": { "main": [[{ "node": "Alert Engineering", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

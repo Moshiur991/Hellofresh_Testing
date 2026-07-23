@@ -10,6 +10,7 @@ import { registerEmergencyRoutes } from './routes/emergency.js';
 import { registerCustomerValidationRoutes } from './routes/customerValidation.js';
 import { registerVapiWebhook } from './routes/vapiWebhook.js';
 import { registerHealthRoutes } from './routes/health.js';
+import { registerInternalCacheRoutes } from './routes/internalCache.js';
 
 export function buildApp() {
   const app = Fastify({
@@ -37,6 +38,7 @@ export function buildApp() {
   registerBusinessHoursRoutes(app);
   registerEmergencyRoutes(app);
   registerCustomerValidationRoutes(app);
+  registerInternalCacheRoutes(app);
 
   app.setErrorHandler(errorHandler);
 

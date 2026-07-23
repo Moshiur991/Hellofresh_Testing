@@ -4,22 +4,35 @@ import type { FastifyBaseLogger } from 'fastify';
 /**
  * Fire-and-forget dispatch to n8n for anything that is NOT latency-sensitive:
  * CRM sync, confirmation SMS/email, transcript storage, analytics, Slack alerts.
+ * Deliberately NOT awaited by callers before they respond to Vapi.
  *
- * Deliberately NOT awaited by route handlers before they respond to Vapi — the
- * caller's spoken reply must never wait on n8n. We still log failures (and rely
- * on n8n's own error-workflow + retry policy on that side) instead of silently
- * dropping events; see docs/ARCHITECTURE.md "Handoff contract" for the payload shape.
+ * Each background event has its OWN n8n webhook (one workflow per event, matching
+ * the "[MASTER] ..." workflows in vapi-realtime-platform/n8n-workflows/), and the
+ * body sent is the FLAT shape that workflow's "Normalize" step reads directly off
+ * `$json.body.*` — no envelope wrapper — so nothing needs translating on the n8n
+ * side. See n8n-workflows/README.md for the exact field list per path.
  */
-export function dispatchToN8n(event: string, payload: Record<string, unknown>, logger?: FastifyBaseLogger): void {
-  const body = JSON.stringify({ event, occurredAt: new Date().toISOString(), payload });
-  fetch(env.N8N_BACKGROUND_WEBHOOK_URL, {
+const N8N_PATHS = {
+  callCompleted: 'call-completed',
+  missedCall: 'missed-call',
+  appointmentBooked: 'appointment-booked',
+  appointmentChange: 'appointment-change',
+  emergencyAlert: 'emergency-alert',
+  handoffAlert: 'handoff-alert',
+} as const;
+
+export type N8nEventPath = (typeof N8N_PATHS)[keyof typeof N8N_PATHS];
+export { N8N_PATHS };
+
+export function dispatchToN8n(path: N8nEventPath, payload: Record<string, unknown>, logger?: FastifyBaseLogger): void {
+  fetch(`${env.N8N_BASE_URL}/${path}`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       'x-webhook-secret': env.N8N_WEBHOOK_SHARED_SECRET,
     },
-    body,
+    body: JSON.stringify(payload),
   }).catch((err) => {
-    logger?.error({ err, event }, 'n8n dispatch failed (non-blocking, background automation only)');
+    logger?.error({ err, path }, 'n8n dispatch failed (non-blocking, background automation only)');
   });
 }

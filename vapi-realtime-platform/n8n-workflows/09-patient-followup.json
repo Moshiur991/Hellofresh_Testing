@@ -1,0 +1,303 @@
+{
+  "name": "[MASTER] Patient Follow-up",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "pf1-trigger",
+      "name": "Follow-up Job Started",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 300],
+      "notes": "Invoked by each business's cloned SHELL workflow, which holds the real Schedule Trigger (per-business cron/timezone) and calls this master via an Execute Workflow node, passing businessId, ghlLocationId, followUpDaysAfter, reviewLink, slackChannel."
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "p1", "name": "businessId", "type": "string", "value": "={{ $json.businessId }}" },
+            { "id": "p2", "name": "businessName", "type": "string", "value": "={{ $json.businessName }}" },
+            { "id": "p3", "name": "ghlLocationId", "type": "string", "value": "={{ $json.ghlLocationId }}" },
+            { "id": "p4", "name": "followUpDaysAfter", "type": "number", "value": "={{ $json.followUpDaysAfter || 2 }}" },
+            { "id": "p5", "name": "reviewLink", "type": "string", "value": "={{ $json.reviewLink }}" },
+            { "id": "p6", "name": "slackChannel", "type": "string", "value": "={{ $json.slackChannel || '#followups' }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "pf2-normalize",
+      "name": "Normalize Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "q1", "name": "cutoffDate", "type": "string", "value": "={{ $now.minus({ days: $json.followUpDaysAfter }).toISO() }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "pf3-cutoff",
+      "name": "Compute Cutoff Date",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "appointments",
+        "returnAll": true,
+        "filterType": "manual",
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            { "keyName": "business_id", "condition": "eq", "keyValue": "={{ $('Normalize Config').item.json.businessId }}" },
+            { "keyName": "review_requested", "condition": "eq", "keyValue": "false" },
+            { "keyName": "status", "condition": "eq", "keyValue": "completed" },
+            { "keyName": "completed_at", "condition": "lte", "keyValue": "={{ $json.cutoffDate }}" }
+          ]
+        },
+        "onError": "continueErrorOutput"
+      },
+      "id": "pf4-get-due",
+      "name": "Get Due Appointments",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [660, 300],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": { "batchSize": 10, "options": {} },
+      "id": "pf5-loop",
+      "name": "Loop Appointments",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "r1",
+              "leftValue": "={{ $json.customer_phone }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "pf6-has-phone",
+      "name": "Has Phone?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1100, 240]
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "from": "={{ $env.TWILIO_FROM_NUMBER }}",
+        "to": "={{ $json.customer_phone }}",
+        "message": "=Hi {{ $json.customer_name }}, thanks for visiting {{ $('Normalize Config').item.json.businessName }}! We'd love your feedback: {{ $('Normalize Config').item.json.reviewLink }}",
+        "onError": "continueErrorOutput"
+      },
+      "id": "pf7-review-sms",
+      "name": "Send Review Request SMS",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [1320, 180],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "twilioApi": { "id": "PLACEHOLDER_TWILIO_CRED", "name": "Twilio account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "tableId": "appointments",
+        "filterType": "manual",
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [{ "keyName": "id", "condition": "eq", "keyValue": "={{ $json.id }}" }]
+        },
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "review_requested", "fieldValue": "true" },
+            { "fieldId": "review_requested_at", "fieldValue": "={{ $now.toISO() }}" }
+          ]
+        },
+        "onError": "continueErrorOutput"
+      },
+      "id": "pf8-mark-sent",
+      "name": "Mark Follow-up Sent",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1540, 180],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": "={{ $('Normalize Config').item.json.slackChannel }}",
+        "text": "=📋 Weekly follow-up digest for *{{ $('Normalize Config').item.json.businessName }}* — review requests processed.",
+        "otherOptions": {}
+      },
+      "id": "pf9-digest",
+      "name": "Send Digest",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1100, 420],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "slackApi": { "id": "PLACEHOLDER_SLACK_CRED", "name": "Slack account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "audit_log",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "business_id", "fieldValue": "={{ $('Normalize Config').item.json.businessId }}" },
+            { "fieldId": "event_type", "fieldValue": "patient_followup_processed" }
+          ]
+        }
+      },
+      "id": "pf10-audit-log",
+      "name": "Audit Log",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1320, 420],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "workflow_execution_log",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "workflow_name", "fieldValue": "patient-followup" },
+            { "fieldId": "business_id", "fieldValue": "={{ $('Normalize Config').item.json.businessId }}" },
+            { "fieldId": "status", "fieldValue": "success" }
+          ]
+        }
+      },
+      "id": "pf11-workflow-log",
+      "name": "Workflow Log",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1540, 420],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "workflow_errors",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "workflow_name", "fieldValue": "patient-followup" },
+            { "fieldId": "node_name", "fieldValue": "={{ $json.error?.node?.name || 'unknown' }}" },
+            { "fieldId": "error_message", "fieldValue": "={{ $json.error?.message || 'unknown error' }}" },
+            { "fieldId": "raw_payload", "fieldValue": "={{ JSON.stringify($json) }}" }
+          ]
+        }
+      },
+      "id": "pf12-handle-failure",
+      "name": "Handle Failure",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [880, 600],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": "#automation-alerts",
+        "text": "=⚠️ patient-followup workflow failed for business {{ $('Normalize Config').item.json.businessId || 'unknown' }} — check workflow_errors table.",
+        "otherOptions": {}
+      },
+      "id": "pf13-alert-slack",
+      "name": "Alert Engineering",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1100, 600],
+      "credentials": {
+        "slackApi": { "id": "PLACEHOLDER_SLACK_CRED", "name": "Slack account" }
+      }
+    }
+  ],
+  "connections": {
+    "Follow-up Job Started": { "main": [[{ "node": "Normalize Config", "type": "main", "index": 0 }]] },
+    "Normalize Config": { "main": [[{ "node": "Compute Cutoff Date", "type": "main", "index": 0 }]] },
+    "Compute Cutoff Date": { "main": [[{ "node": "Get Due Appointments", "type": "main", "index": 0 }]] },
+    "Get Due Appointments": {
+      "main": [
+        [{ "node": "Loop Appointments", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Loop Appointments": {
+      "main": [
+        [{ "node": "Send Digest", "type": "main", "index": 0 }],
+        [{ "node": "Has Phone?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Has Phone?": {
+      "main": [
+        [{ "node": "Send Review Request SMS", "type": "main", "index": 0 }],
+        [{ "node": "Loop Appointments", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send Review Request SMS": {
+      "main": [
+        [{ "node": "Mark Follow-up Sent", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Mark Follow-up Sent": {
+      "main": [
+        [{ "node": "Loop Appointments", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send Digest": {
+      "main": [
+        [{ "node": "Audit Log", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Audit Log": { "main": [[{ "node": "Workflow Log", "type": "main", "index": 0 }]] },
+    "Handle Failure": { "main": [[{ "node": "Alert Engineering", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

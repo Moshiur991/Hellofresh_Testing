@@ -22,8 +22,11 @@ const EnvSchema = z.object({
   GOOGLE_OAUTH_CLIENT_ID: z.string().min(1),
   GOOGLE_OAUTH_CLIENT_SECRET: z.string().min(1),
 
-  N8N_BACKGROUND_WEBHOOK_URL: z.string().url(),
+  // Base n8n webhook URL, no trailing slash, e.g. https://your-n8n.app.n8n.cloud/webhook
+  // — each background event is POSTed to `${N8N_BASE_URL}/<event-path>` (see n8nDispatcher.ts).
+  N8N_BASE_URL: z.string().url(),
   N8N_WEBHOOK_SHARED_SECRET: z.string().min(1),
+  INTERNAL_API_SHARED_SECRET: z.string().min(1),
 
   KNOWLEDGE_SEARCH_TIMEOUT_MS: z.coerce.number().default(450),
   CALENDAR_TIMEOUT_MS: z.coerce.number().default(900),

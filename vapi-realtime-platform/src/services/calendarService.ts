@@ -1,9 +1,14 @@
 import { supabase } from '../db/supabase.js';
 import { calendarClient } from '../integrations/googleCalendar.js';
-import { dispatchToN8n } from '../integrations/n8nDispatcher.js';
+import { dispatchToN8n, N8N_PATHS } from '../integrations/n8nDispatcher.js';
 import { claimIdempotencyKey } from '../cache/redis.js';
-import { upsertCustomer } from './customerService.js';
+import { upsertCustomer, validateCustomer } from './customerService.js';
+import { getBusinessNotifyConfig } from './businessConfigService.js';
 import type { FastifyBaseLogger } from 'fastify';
+
+function fullName(first?: string | null, last?: string | null): string {
+  return [first, last].filter(Boolean).join(' ').trim();
+}
 
 async function getCalendarCreds(locationId: string) {
   const { data, error } = await supabase
@@ -94,12 +99,29 @@ export async function bookAppointment(
     .single();
   if (error || !appointment) throw new Error(`Failed to persist appointment: ${error?.message}`);
 
-  // Background-only from here: confirmation SMS/email, CRM sync — never awaited.
-  dispatchToN8n(
-    'appointment.booked',
-    { businessId: params.businessId, appointmentId: appointment.id, customer, service: params.service, startIso },
-    logger,
-  );
+  // Background-only from here, and deliberately NOT a "confirmed" message — the
+  // booking is tentative. n8n's Appointment Booked workflow sends the customer a
+  // "we've received your request" text and pings staff to review it; the separate
+  // Appointment Confirmed workflow (staff-triggered, later) is what actually tells
+  // the customer it's confirmed. Never awaited — must not affect the spoken reply.
+  getBusinessNotifyConfig(params.businessId)
+    .then((business) => {
+      dispatchToN8n(
+        N8N_PATHS.appointmentBooked,
+        {
+          businessId: params.businessId,
+          appointmentId: appointment.id,
+          businessName: business.name,
+          customer: { name: fullName(params.firstName, params.lastName), phone: params.phone, email: params.email ?? '' },
+          startTime: startIso,
+          serviceType: params.service,
+          ghlContactId: customer.ghlContactId ?? '',
+          slackChannel: business.slackChannel ?? '',
+        },
+        logger,
+      );
+    })
+    .catch((err) => logger?.error({ err }, 'failed to load business config for appointment.booked notify'));
 
   return { status: 'tentative', appointmentId: appointment.id };
 }
@@ -126,8 +148,31 @@ export async function cancelOrRescheduleAppointment(
     windowEndIso: windowEnd,
   });
 
+  // One notify function for every outcome (done or escalated) — same shape, one
+  // n8n workflow ("Appointment Change") branches internally on `status`.
+  const notify = (status: 'done' | 'escalated', extra: Record<string, unknown> = {}) => {
+    Promise.all([getBusinessNotifyConfig(params.businessId), validateCustomer({ businessId: params.businessId, phone: params.phone })])
+      .then(([business, customer]) => {
+        dispatchToN8n(
+          N8N_PATHS.appointmentChange,
+          {
+            businessId: params.businessId,
+            businessName: business.name,
+            slackChannel: business.slackChannel ?? '',
+            ghlContactId: customer?.ghlContactId ?? '',
+            customer: { name: fullName(customer?.firstName, customer?.lastName), phone: params.phone },
+            action: params.action,
+            status,
+            ...extra,
+          },
+          logger,
+        );
+      })
+      .catch((err) => logger?.error({ err }, 'failed to load notify config for appointment-change'));
+  };
+
   const escalate = (reason: string) => {
-    dispatchToN8n('appointment.change_escalated', { businessId: params.businessId, phone: params.phone, action: params.action, reason }, logger);
+    notify('escalated', { reason });
     return { status: 'escalated' as const, message: reason };
   };
 
@@ -143,13 +188,15 @@ export async function cancelOrRescheduleAppointment(
 
   if (params.action === 'cancel') {
     await calendarClient.deleteEvent({ creds, eventId: found.eventId });
-    dispatchToN8n('appointment.cancelled', { businessId: params.businessId, phone: params.phone }, logger);
+    await supabase.from('appointments').update({ status: 'cancelled' }).eq('calendar_event_id', found.eventId);
+    notify('done');
     return { status: 'done', message: 'Cancelled.' };
   }
 
   const newStart = params.newStartIso!;
   const newEnd = new Date(new Date(newStart).getTime() + defaultDurationMin * 60_000).toISOString();
   await calendarClient.updateEvent({ creds, eventId: found.eventId, startIso: newStart, endIso: newEnd });
-  dispatchToN8n('appointment.rescheduled', { businessId: params.businessId, phone: params.phone, newStart }, logger);
+  await supabase.from('appointments').update({ start_at: newStart, end_at: newEnd }).eq('calendar_event_id', found.eventId);
+  notify('done', { newStartTime: newStart });
   return { status: 'done', message: 'Rescheduled.' };
 }

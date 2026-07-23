@@ -6,9 +6,24 @@ import { checkAvailability, bookAppointment, cancelOrRescheduleAppointment } fro
 import { getBusinessHours } from '../services/businessHoursService.js';
 import { routeEmergency } from '../services/emergencyService.js';
 import { validateCustomer } from '../services/customerService.js';
+import { getBusinessNotifyConfig } from '../services/businessConfigService.js';
 import { normalizePhone, isValidE164 } from '../utils/phone.js';
-import { dispatchToN8n } from '../integrations/n8nDispatcher.js';
+import { dispatchToN8n, N8N_PATHS } from '../integrations/n8nDispatcher.js';
 import { supabase } from '../db/supabase.js';
+
+function fullName(first?: string | null, last?: string | null): string {
+  return [first, last].filter(Boolean).join(' ').trim();
+}
+
+// Vapi's `endedReason` values evolve between API versions (documented caveat,
+// see VAPI-VOICE-SETUP.md) — matched loosely on substring rather than an exact
+// enum so a minor wording change doesn't silently stop missed-call detection.
+function detectMissedCallReason(endedReason: string | undefined): 'voicemail' | 'no_answer' | null {
+  const reason = (endedReason ?? '').toLowerCase();
+  if (reason.includes('voicemail')) return 'voicemail';
+  if (reason.includes('no-answer') || reason.includes('did-not-answer') || reason.includes('busy')) return 'no_answer';
+  return null;
+}
 
 interface VapiToolCall {
   id: string;
@@ -137,7 +152,24 @@ async function dispatchTool(name: string, args: any, tenant: Awaited<ReturnType<
 
     case 'request_human_handoff': {
       await supabase.from('handoff_requests').insert({ business_id: tenant.businessId, reason: args.reason });
-      dispatchToN8n('handoff.requested', { businessId: tenant.businessId, phone: args.phone, reason: args.reason }, logger);
+      getBusinessNotifyConfig(tenant.businessId)
+        .then((business) =>
+          dispatchToN8n(
+            N8N_PATHS.handoffAlert,
+            {
+              businessId: tenant.businessId,
+              businessName: business.name,
+              slackChannel: business.slackChannel ?? '',
+              ghlLocationId: business.ghlLocationId ?? '',
+              frontDeskOwnerId: business.frontDeskOwnerId ?? '',
+              callerPhone: args.phone ?? '',
+              callerEmail: args.email ?? '',
+              reason: args.reason,
+            },
+            logger,
+          ),
+        )
+        .catch((err) => logger.error({ err }, 'failed to load business config for handoff-alert notify'));
       return { status: 'logged', message: "I've flagged this for our team — they'll follow up shortly." };
     }
 
@@ -156,14 +188,15 @@ async function dispatchTool(name: string, args: any, tenant: Awaited<ReturnType<
 
 async function handleEndOfCallReport(message: any, logger: any, reply: any) {
   const call = message.call ?? {};
-  const businessSlugOrId = call.assistantId ? (await resolveTenantByAssistantId(call.assistantId)).businessId : null;
+  const businessId = call.assistantId ? (await resolveTenantByAssistantId(call.assistantId)).businessId : null;
+  const callerPhone: string | undefined = call.customer?.number;
 
-  if (businessSlugOrId) {
+  if (businessId) {
     await supabase.from('calls').upsert(
       {
-        business_id: businessSlugOrId,
+        business_id: businessId,
         vapi_call_id: call.id,
-        phone_number: call.customer?.number,
+        phone_number: callerPhone,
         started_at: call.startedAt,
         ended_at: call.endedAt,
         duration_s: message.durationSeconds,
@@ -175,9 +208,55 @@ async function handleEndOfCallReport(message: any, logger: any, reply: any) {
     );
   }
 
-  // Everything else — full transcript storage, CRM update, analytics, SMS/email/Slack
-  // notifications, follow-up scheduling — is background automation. n8n owns it.
-  dispatchToN8n('call.completed', { businessId: businessSlugOrId, call, transcript: message.transcript, summary: message.summary }, logger);
+  if (!businessId) {
+    logger.warn({ assistantId: call.assistantId }, 'end-of-call-report: could not resolve business, skipping n8n dispatch');
+    return reply.send({ received: true });
+  }
+
+  // Everything else — transcript storage, CRM update, analytics, SMS/email/Slack
+  // notifications — is background automation, n8n's job. A missed call (voicemail
+  // or no answer) and a normal completed call are different workflows with
+  // different urgency, so they're routed to two different n8n webhooks rather
+  // than one workflow branching on reason internally.
+  const [business, customer] = await Promise.all([
+    getBusinessNotifyConfig(businessId).catch(() => null),
+    callerPhone ? validateCustomer({ businessId, phone: callerPhone }).catch(() => null) : Promise.resolve(null),
+  ]);
+
+  const missedReason = detectMissedCallReason(message.endedReason);
+  if (missedReason) {
+    dispatchToN8n(
+      N8N_PATHS.missedCall,
+      {
+        businessId,
+        callId: call.id,
+        businessName: business?.name ?? '',
+        callerPhone: callerPhone ?? '',
+        reason: missedReason,
+        voicemailUrl: missedReason === 'voicemail' ? message.recordingUrl ?? call.recordingUrl ?? '' : '',
+        ghlLocationId: business?.ghlLocationId ?? '',
+        frontDeskOwnerId: business?.frontDeskOwnerId ?? '',
+        slackChannel: business?.slackChannel ?? '',
+      },
+      logger,
+    );
+  } else {
+    dispatchToN8n(
+      N8N_PATHS.callCompleted,
+      {
+        businessId,
+        callId: call.id,
+        businessName: business?.name ?? '',
+        transcript: message.transcript ?? '',
+        recordingUrl: message.recordingUrl ?? call.recordingUrl ?? '',
+        customer: { name: fullName(customer?.firstName, customer?.lastName), phone: callerPhone ?? '' },
+        ghlContactId: customer?.ghlContactId ?? '',
+        durationSec: message.durationSeconds ?? 0,
+        slackChannel: business?.slackChannel ?? '',
+      },
+      logger,
+    );
+  }
 
   return reply.send({ received: true });
 }

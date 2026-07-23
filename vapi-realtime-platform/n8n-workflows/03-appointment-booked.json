@@ -1,0 +1,254 @@
+{
+  "name": "[MASTER] Appointment Booked (Tentative)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "appointment-booked",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "ab1-webhook",
+      "name": "Appointment Booked Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "appointment-booked-master",
+      "notes": "Fires the moment the AI phone assistant tentatively holds a slot — NOT a staff-confirmed booking yet. See '04-appointment-confirmed.json' for what fires once staff actually confirm."
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "a1", "name": "businessId", "type": "string", "value": "={{ $json.body.businessId }}" },
+            { "id": "a2", "name": "appointmentId", "type": "string", "value": "={{ $json.body.appointmentId }}" },
+            { "id": "a8", "name": "businessName", "type": "string", "value": "={{ $json.body.businessName }}" },
+            { "id": "a3", "name": "customerName", "type": "string", "value": "={{ $json.body.customer.name }}" },
+            { "id": "a4", "name": "customerPhone", "type": "string", "value": "={{ $json.body.customer.phone }}" },
+            { "id": "a5", "name": "customerEmail", "type": "string", "value": "={{ $json.body.customer.email }}" },
+            { "id": "a6", "name": "startTime", "type": "string", "value": "={{ $json.body.startTime }}" },
+            { "id": "a7", "name": "serviceType", "type": "string", "value": "={{ $json.body.serviceType }}" },
+            { "id": "a9", "name": "ghlContactId", "type": "string", "value": "={{ $json.body.ghlContactId }}" },
+            { "id": "a11", "name": "slackChannel", "type": "string", "value": "={{ $json.body.slackChannel || '#bookings' }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ab2-normalize",
+      "name": "Normalize Payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "from": "={{ $env.TWILIO_FROM_NUMBER }}",
+        "to": "={{ $json.customerPhone }}",
+        "message": "=Hi {{ $json.customerName }}, thanks for calling {{ $json.businessName }}! We've received your request for {{ $json.serviceType }} on {{ $json.startTime }} and are holding that time. Our team will confirm shortly.",
+        "onError": "continueErrorOutput"
+      },
+      "id": "ab4-sms",
+      "name": "Send Tentative-Hold SMS",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [440, 300],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "twilioApi": { "id": "PLACEHOLDER_TWILIO_CRED", "name": "Twilio account" }
+      },
+      "notes": "Deliberately says 'holding' / 'will confirm', never 'confirmed' — staff confirmation is a separate later step (04-appointment-confirmed.json)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "g1",
+              "leftValue": "={{ $json.ghlContactId }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ab12-has-ghl",
+      "name": "Has GHL Contact?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://services.leadconnectorhq.com/contacts/{{ $json.ghlContactId }}/notes",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Version", "value": "2021-07-28" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ body: 'Tentative booking (awaiting staff confirmation): ' + $json.serviceType + ' on ' + $json.startTime }) }}",
+        "options": { "timeout": 5000 },
+        "onError": "continueErrorOutput"
+      },
+      "id": "ab6-update-ghl",
+      "name": "Add GHL Note",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 220],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": { "id": "PLACEHOLDER_GHL_CRED", "name": "Go High Level API" }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": "={{ $json.slackChannel }}",
+        "text": "=🗓️ *New tentative booking — needs confirmation*\n{{ $json.customerName }} ({{ $json.customerPhone }}) — {{ $json.serviceType }} on {{ $json.startTime }} for *{{ $json.businessName }}*.\nPlease confirm availability with the customer, then mark it confirmed.",
+        "otherOptions": {},
+        "onError": "continueErrorOutput"
+      },
+      "id": "ab13-notify-team",
+      "name": "Notify Team",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1100, 300],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "slackApi": { "id": "PLACEHOLDER_SLACK_CRED", "name": "Slack account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "audit_log",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "business_id", "fieldValue": "={{ $json.businessId }}" },
+            { "fieldId": "event_type", "fieldValue": "appointment_booked_processed" },
+            { "fieldId": "reference_id", "fieldValue": "={{ $json.appointmentId }}" }
+          ]
+        }
+      },
+      "id": "ab8-audit-log",
+      "name": "Audit Log",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1320, 300],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "workflow_execution_log",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "workflow_name", "fieldValue": "appointment-booked" },
+            { "fieldId": "business_id", "fieldValue": "={{ $json.businessId }}" },
+            { "fieldId": "reference_id", "fieldValue": "={{ $json.appointmentId }}" },
+            { "fieldId": "status", "fieldValue": "success" }
+          ]
+        }
+      },
+      "id": "ab9-workflow-log",
+      "name": "Workflow Log",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1540, 300],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "workflow_errors",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "workflow_name", "fieldValue": "appointment-booked" },
+            { "fieldId": "node_name", "fieldValue": "={{ $json.error?.node?.name || 'unknown' }}" },
+            { "fieldId": "error_message", "fieldValue": "={{ $json.error?.message || 'unknown error' }}" },
+            { "fieldId": "raw_payload", "fieldValue": "={{ JSON.stringify($json) }}" }
+          ]
+        }
+      },
+      "id": "ab10-handle-failure",
+      "name": "Handle Failure",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [660, 480],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": "#automation-alerts",
+        "text": "=⚠️ appointment-booked workflow failed for appointment {{ $json.appointmentId || 'unknown' }} — check workflow_errors table.",
+        "otherOptions": {}
+      },
+      "id": "ab11-alert-slack",
+      "name": "Alert Engineering",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [880, 480],
+      "credentials": {
+        "slackApi": { "id": "PLACEHOLDER_SLACK_CRED", "name": "Slack account" }
+      }
+    }
+  ],
+  "connections": {
+    "Appointment Booked Trigger": { "main": [[{ "node": "Normalize Payload", "type": "main", "index": 0 }]] },
+    "Normalize Payload": { "main": [[{ "node": "Send Tentative-Hold SMS", "type": "main", "index": 0 }]] },
+    "Send Tentative-Hold SMS": {
+      "main": [
+        [{ "node": "Has GHL Contact?", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Has GHL Contact?": {
+      "main": [
+        [{ "node": "Add GHL Note", "type": "main", "index": 0 }],
+        [{ "node": "Notify Team", "type": "main", "index": 0 }]
+      ]
+    },
+    "Add GHL Note": {
+      "main": [
+        [{ "node": "Notify Team", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Notify Team": {
+      "main": [
+        [{ "node": "Audit Log", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Audit Log": { "main": [[{ "node": "Workflow Log", "type": "main", "index": 0 }]] },
+    "Handle Failure": { "main": [[{ "node": "Alert Engineering", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

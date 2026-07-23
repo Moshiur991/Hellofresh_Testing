@@ -1,0 +1,249 @@
+{
+  "name": "[MASTER] Handoff Alert (Talk to a Person)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "handoff-alert",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "hd1-webhook",
+      "name": "Handoff Requested Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "handoff-alert-master",
+      "notes": "Fires when the caller asks for a real person, sounds frustrated, or the assistant otherwise can't help. Not an emergency — but still needs a prompt human callback."
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "h1", "name": "businessId", "type": "string", "value": "={{ $json.body.businessId }}" },
+            { "id": "h2", "name": "businessName", "type": "string", "value": "={{ $json.body.businessName }}" },
+            { "id": "h3", "name": "callerPhone", "type": "string", "value": "={{ $json.body.callerPhone }}" },
+            { "id": "h4", "name": "callerEmail", "type": "string", "value": "={{ $json.body.callerEmail }}" },
+            { "id": "h5", "name": "reason", "type": "string", "value": "={{ $json.body.reason }}" },
+            { "id": "h6", "name": "ghlLocationId", "type": "string", "value": "={{ $json.body.ghlLocationId }}" },
+            { "id": "h7", "name": "frontDeskOwnerId", "type": "string", "value": "={{ $json.body.frontDeskOwnerId }}" },
+            { "id": "h8", "name": "slackChannel", "type": "string", "value": "={{ $json.body.slackChannel || '#handoffs' }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "hd2-normalize",
+      "name": "Normalize Payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $env.FRONT_DESK_ALERT_EMAIL }}",
+        "subject": "=Callback requested — {{ $json.businessName }}",
+        "message": "=Caller: {{ $json.callerPhone }}{{ $json.callerEmail ? (' / ' + $json.callerEmail) : '' }}<br>Reason: {{ $json.reason }}<br><br>Please call them back when you can.",
+        "options": {},
+        "onError": "continueErrorOutput"
+      },
+      "id": "hd4-email",
+      "name": "Email Front Desk",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [440, 300],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "gmailOAuth2": { "id": "PLACEHOLDER_GMAIL_CRED", "name": "Gmail account" }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "g1",
+              "leftValue": "={{ $json.ghlLocationId }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "hd10-has-ghl",
+      "name": "Has GHL Location?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://services.leadconnectorhq.com/tasks/",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Version", "value": "2021-07-28" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ locationId: $json.ghlLocationId, title: 'Call back ' + $json.callerPhone + ' — ' + $json.reason, assignedTo: $json.frontDeskOwnerId, dueDate: $now.plus({ hours: 2 }).toISO() }) }}",
+        "options": { "timeout": 5000 },
+        "onError": "continueErrorOutput"
+      },
+      "id": "hd5-ghl-task",
+      "name": "Create GHL Callback Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 220],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": { "id": "PLACEHOLDER_GHL_CRED", "name": "Go High Level API" }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": "={{ $json.slackChannel }}",
+        "text": "=🙋 *Callback requested* — {{ $json.businessName }}\nCaller: {{ $json.callerPhone }}\nReason: {{ $json.reason }}",
+        "otherOptions": {},
+        "onError": "continueErrorOutput"
+      },
+      "id": "hd6-slack",
+      "name": "Notify Team",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1100, 300],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "slackApi": { "id": "PLACEHOLDER_SLACK_CRED", "name": "Slack account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "audit_log",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "business_id", "fieldValue": "={{ $json.businessId }}" },
+            { "fieldId": "event_type", "fieldValue": "handoff_alert_processed" }
+          ]
+        }
+      },
+      "id": "hd7-audit-log",
+      "name": "Audit Log",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1320, 300],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "workflow_execution_log",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "workflow_name", "fieldValue": "handoff-alert" },
+            { "fieldId": "business_id", "fieldValue": "={{ $json.businessId }}" },
+            { "fieldId": "status", "fieldValue": "success" }
+          ]
+        }
+      },
+      "id": "hd8-workflow-log",
+      "name": "Workflow Log",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1540, 300],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "workflow_errors",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "workflow_name", "fieldValue": "handoff-alert" },
+            { "fieldId": "node_name", "fieldValue": "={{ $json.error?.node?.name || 'unknown' }}" },
+            { "fieldId": "error_message", "fieldValue": "={{ $json.error?.message || 'unknown error' }}" },
+            { "fieldId": "raw_payload", "fieldValue": "={{ JSON.stringify($json) }}" }
+          ]
+        }
+      },
+      "id": "hd9-handle-failure",
+      "name": "Handle Failure",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [660, 480],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": "#automation-alerts",
+        "text": "=⚠️ handoff-alert workflow failed for business {{ $json.businessId || 'unknown' }} — check workflow_errors table.",
+        "otherOptions": {}
+      },
+      "id": "hd11-alert-slack",
+      "name": "Alert Engineering",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [880, 480],
+      "credentials": {
+        "slackApi": { "id": "PLACEHOLDER_SLACK_CRED", "name": "Slack account" }
+      }
+    }
+  ],
+  "connections": {
+    "Handoff Requested Trigger": { "main": [[{ "node": "Normalize Payload", "type": "main", "index": 0 }]] },
+    "Normalize Payload": { "main": [[{ "node": "Email Front Desk", "type": "main", "index": 0 }]] },
+    "Email Front Desk": {
+      "main": [
+        [{ "node": "Has GHL Location?", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Has GHL Location?": {
+      "main": [
+        [{ "node": "Create GHL Callback Task", "type": "main", "index": 0 }],
+        [{ "node": "Notify Team", "type": "main", "index": 0 }]
+      ]
+    },
+    "Create GHL Callback Task": {
+      "main": [
+        [{ "node": "Notify Team", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Notify Team": {
+      "main": [
+        [{ "node": "Audit Log", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Audit Log": { "main": [[{ "node": "Workflow Log", "type": "main", "index": 0 }]] },
+    "Handle Failure": { "main": [[{ "node": "Alert Engineering", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

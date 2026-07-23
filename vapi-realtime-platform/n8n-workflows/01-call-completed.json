@@ -1,0 +1,418 @@
+{
+  "name": "[MASTER] Call Completed",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "call-completed",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "n1-webhook",
+      "name": "Call Completed Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "call-completed-master"
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            { "id": "a1", "name": "businessId", "type": "string", "value": "={{ $json.body.businessId }}" },
+            { "id": "a2", "name": "callId", "type": "string", "value": "={{ $json.body.callId }}" },
+            { "id": "a10", "name": "businessName", "type": "string", "value": "={{ $json.body.businessName }}" },
+            { "id": "a3", "name": "transcript", "type": "string", "value": "={{ $json.body.transcript }}" },
+            { "id": "a4", "name": "recordingUrl", "type": "string", "value": "={{ $json.body.recordingUrl }}" },
+            { "id": "a5", "name": "customerName", "type": "string", "value": "={{ $json.body.customer.name }}" },
+            { "id": "a6", "name": "customerPhone", "type": "string", "value": "={{ $json.body.customer.phone }}" },
+            { "id": "a7", "name": "ghlContactId", "type": "string", "value": "={{ $json.body.ghlContactId }}" },
+            { "id": "a8", "name": "durationSec", "type": "number", "value": "={{ $json.body.durationSec }}" },
+            { "id": "a9", "name": "slackChannel", "type": "string", "value": "={{ $json.body.slackChannel || '#calls' }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "n2-normalize",
+      "name": "Normalize Payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "call_transcripts",
+        "dataToSend": "autoMapInputData",
+        "onError": "continueErrorOutput"
+      },
+      "id": "n3-store-transcript",
+      "name": "Store Transcript",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [440, 300],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": { "value": "gpt-4o-mini" },
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You summarize AI receptionist phone calls. Return ONLY valid JSON with keys: summary (string, 1-2 sentences), sentiment (one of positive, neutral, negative), action_items (array of strings, empty array if none)."
+            },
+            {
+              "role": "user",
+              "content": "=Transcript:\n{{ $json.transcript }}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.2 },
+        "onError": "continueErrorOutput"
+      },
+      "id": "n4-summarize",
+      "name": "Generate Call Summary",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.3,
+      "position": [660, 300],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "openAiApi": { "id": "PLACEHOLDER_OPENAI_CRED", "name": "OpenAI account" }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "b1", "name": "summaryData", "type": "object", "value": "={{ JSON.parse($json.message.content) }}" },
+            { "id": "b2", "name": "businessId", "type": "string", "value": "={{ $('Normalize Payload').item.json.businessId }}" },
+            { "id": "b3", "name": "callId", "type": "string", "value": "={{ $('Normalize Payload').item.json.callId }}" },
+            { "id": "b4", "name": "customerName", "type": "string", "value": "={{ $('Normalize Payload').item.json.customerName }}" },
+            { "id": "b5", "name": "customerPhone", "type": "string", "value": "={{ $('Normalize Payload').item.json.customerPhone }}" },
+            { "id": "b6", "name": "ghlContactId", "type": "string", "value": "={{ $('Normalize Payload').item.json.ghlContactId }}" },
+            { "id": "b7", "name": "recordingUrl", "type": "string", "value": "={{ $('Normalize Payload').item.json.recordingUrl }}" },
+            { "id": "b8", "name": "durationSec", "type": "number", "value": "={{ $('Normalize Payload').item.json.durationSec }}" },
+            { "id": "b9", "name": "slackChannel", "type": "string", "value": "={{ $('Normalize Payload').item.json.slackChannel }}" }
+          ]
+        },
+        "options": {},
+        "onError": "continueErrorOutput"
+      },
+      "id": "n5-parse-summary",
+      "name": "Parse Summary",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [880, 300],
+      "onError": "continueErrorOutput",
+      "notes": "If the AI didn't return clean JSON this node errors instead of crashing the whole run — it now routes to Handle Failure just like every external call above it."
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "calls",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "business_id", "fieldValue": "={{ $json.businessId }}" },
+            { "fieldId": "call_id", "fieldValue": "={{ $json.callId }}" },
+            { "fieldId": "customer_name", "fieldValue": "={{ $json.customerName }}" },
+            { "fieldId": "customer_phone", "fieldValue": "={{ $json.customerPhone }}" },
+            { "fieldId": "summary", "fieldValue": "={{ $json.summaryData.summary }}" },
+            { "fieldId": "sentiment", "fieldValue": "={{ $json.summaryData.sentiment }}" },
+            { "fieldId": "action_items", "fieldValue": "={{ JSON.stringify($json.summaryData.action_items) }}" },
+            { "fieldId": "recording_url", "fieldValue": "={{ $json.recordingUrl }}" },
+            { "fieldId": "duration_sec", "fieldValue": "={{ $json.durationSec }}" }
+          ]
+        },
+        "onError": "continueErrorOutput"
+      },
+      "id": "n6-store-structured",
+      "name": "Store Structured Call Data",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1100, 300],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "g1",
+              "leftValue": "={{ $json.ghlContactId }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n15-has-ghl",
+      "name": "Has GHL Contact?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1320, 300],
+      "notes": "Skips the GHL note if this business/customer doesn't have a known GHL contact ID yet, instead of calling the GHL API with a blank ID and failing."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://services.leadconnectorhq.com/contacts/{{ $json.ghlContactId }}/notes",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Version", "value": "2021-07-28" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ body: $json.summaryData.summary }) }}",
+        "options": { "timeout": 5000 },
+        "onError": "continueErrorOutput"
+      },
+      "id": "n7-update-ghl",
+      "name": "Update GHL Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1540, 220],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": { "id": "PLACEHOLDER_GHL_CRED", "name": "Go High Level API" }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.summaryData.sentiment }}",
+              "rightValue": "negative",
+              "operator": { "type": "string", "operation": "equals" }
+            },
+            {
+              "id": "c2",
+              "leftValue": "={{ $json.summaryData.action_items.length }}",
+              "rightValue": 0,
+              "operator": { "type": "number", "operation": "gt" }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "n8-if-followup",
+      "name": "Needs Follow-up?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1760, 300]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": "={{ $json.slackChannel }}",
+        "text": "=📞 *Follow-up needed* — {{ $json.customerName }} ({{ $json.customerPhone }})\nSentiment: {{ $json.summaryData.sentiment }}\nSummary: {{ $json.summaryData.summary }}\nAction items: {{ $json.summaryData.action_items.join(', ') }}",
+        "otherOptions": {},
+        "onError": "continueErrorOutput"
+      },
+      "id": "n9-notify-team",
+      "name": "Notify Team",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1980, 180],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "slackApi": { "id": "PLACEHOLDER_SLACK_CRED", "name": "Slack account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "follow_up_tasks",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "business_id", "fieldValue": "={{ $json.businessId }}" },
+            { "fieldId": "call_id", "fieldValue": "={{ $json.callId }}" },
+            { "fieldId": "reason", "fieldValue": "={{ $json.summaryData.action_items.join('; ') || 'Negative sentiment call' }}" },
+            { "fieldId": "status", "fieldValue": "open" }
+          ]
+        },
+        "onError": "continueErrorOutput"
+      },
+      "id": "n10-create-task",
+      "name": "Create Follow-up Task",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2200, 180],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "audit_log",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "business_id", "fieldValue": "={{ $json.businessId }}" },
+            { "fieldId": "event_type", "fieldValue": "call_completed_processed" },
+            { "fieldId": "reference_id", "fieldValue": "={{ $json.callId }}" }
+          ]
+        }
+      },
+      "id": "n11-audit-log",
+      "name": "Audit Log",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2420, 300],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "workflow_execution_log",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "workflow_name", "fieldValue": "call-completed" },
+            { "fieldId": "business_id", "fieldValue": "={{ $json.businessId }}" },
+            { "fieldId": "call_id", "fieldValue": "={{ $json.callId }}" },
+            { "fieldId": "status", "fieldValue": "success" }
+          ]
+        }
+      },
+      "id": "n12-workflow-log",
+      "name": "Workflow Log",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2640, 300],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "workflow_errors",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "workflow_name", "fieldValue": "call-completed" },
+            { "fieldId": "node_name", "fieldValue": "={{ $json.error?.node?.name || 'unknown' }}" },
+            { "fieldId": "error_message", "fieldValue": "={{ $json.error?.message || 'unknown error' }}" },
+            { "fieldId": "raw_payload", "fieldValue": "={{ JSON.stringify($json) }}" }
+          ]
+        }
+      },
+      "id": "n13-handle-failure",
+      "name": "Handle Failure",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [880, 560],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": "#automation-alerts",
+        "text": "=⚠️ call-completed workflow failed for call {{ $json.callId || 'unknown' }} — check workflow_errors table.",
+        "otherOptions": {}
+      },
+      "id": "n14-alert-slack",
+      "name": "Alert Engineering",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1100, 560],
+      "credentials": {
+        "slackApi": { "id": "PLACEHOLDER_SLACK_CRED", "name": "Slack account" }
+      }
+    }
+  ],
+  "connections": {
+    "Call Completed Trigger": { "main": [[{ "node": "Normalize Payload", "type": "main", "index": 0 }]] },
+    "Normalize Payload": { "main": [[{ "node": "Store Transcript", "type": "main", "index": 0 }]] },
+    "Store Transcript": {
+      "main": [
+        [{ "node": "Generate Call Summary", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Generate Call Summary": {
+      "main": [
+        [{ "node": "Parse Summary", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse Summary": {
+      "main": [
+        [{ "node": "Store Structured Call Data", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Store Structured Call Data": {
+      "main": [
+        [{ "node": "Has GHL Contact?", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Has GHL Contact?": {
+      "main": [
+        [{ "node": "Update GHL Contact", "type": "main", "index": 0 }],
+        [{ "node": "Needs Follow-up?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Update GHL Contact": {
+      "main": [
+        [{ "node": "Needs Follow-up?", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Needs Follow-up?": {
+      "main": [
+        [{ "node": "Notify Team", "type": "main", "index": 0 }],
+        [{ "node": "Audit Log", "type": "main", "index": 0 }]
+      ]
+    },
+    "Notify Team": {
+      "main": [
+        [{ "node": "Create Follow-up Task", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Create Follow-up Task": { "main": [[{ "node": "Audit Log", "type": "main", "index": 0 }]] },
+    "Audit Log": { "main": [[{ "node": "Workflow Log", "type": "main", "index": 0 }]] },
+    "Handle Failure": { "main": [[{ "node": "Alert Engineering", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

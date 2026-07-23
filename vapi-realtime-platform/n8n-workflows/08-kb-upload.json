@@ -1,0 +1,340 @@
+{
+  "name": "[MASTER] Knowledge Base Upload",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "kb-upload",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "k1-webhook",
+      "name": "KB Document Uploaded",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "kb-upload-master",
+      "notes": "If you're uploading actual files (PDFs), turn on this node's 'Binary Data' option in its settings so the file comes through as binary — a plain JSON POST won't carry a file. Text/URL uploads (sourceType != 'file') work with the default settings."
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "d1", "name": "businessId", "type": "string", "value": "={{ $json.body.businessId }}" },
+            { "id": "d2", "name": "businessName", "type": "string", "value": "={{ $json.body.businessName }}" },
+            { "id": "d3", "name": "namespace", "type": "string", "value": "={{ $json.body.businessId }}" },
+            { "id": "d4", "name": "sourceType", "type": "string", "value": "={{ $json.body.sourceType }}" },
+            { "id": "d5", "name": "documentTitle", "type": "string", "value": "={{ $json.body.documentTitle }}" },
+            { "id": "d6", "name": "rawText", "type": "string", "value": "={{ $json.body.text }}" },
+            { "id": "d7", "name": "slackChannel", "type": "string", "value": "={{ $json.body.slackChannel || '#kb-updates' }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "k2-normalize",
+      "name": "Normalize Upload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "binaryPropertyName": "data",
+        "options": {}
+      },
+      "id": "k3-extract-file",
+      "name": "Extract From File",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [440, 180],
+      "notes": "Only executes when sourceType = file (binary attached). Text/URL sources skip straight to Chunk Text."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "e1",
+              "leftValue": "={{ $json.sourceType }}",
+              "rightValue": "file",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "k4-if-file",
+      "name": "Is File Upload?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deterministic recursive-character chunking.\n// Justified exception to \"avoid Code nodes\": no standard n8n node performs\n// fixed-size/recursive text chunking outside the LangChain sub-node ecosystem.\nconst chunkSize = 1200;\nconst overlap = 150;\nconst text = ($input.first().json.rawText || $input.first().json.text || '').toString();\nconst chunks = [];\nlet start = 0;\nwhile (start < text.length) {\n  const end = Math.min(start + chunkSize, text.length);\n  chunks.push(text.slice(start, end));\n  start += chunkSize - overlap;\n}\nreturn chunks.map((chunk, i) => ({\n  json: {\n    businessId: $input.first().json.businessId,\n    namespace: $input.first().json.namespace,\n    documentTitle: $input.first().json.documentTitle,\n    chunkIndex: i,\n    chunkText: chunk\n  }\n}));",
+        "onError": "continueErrorOutput"
+      },
+      "id": "k5-chunk-text",
+      "name": "Chunk Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 300],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "batchSize": 20,
+        "options": {}
+      },
+      "id": "k6-split-batches",
+      "name": "Batch Chunks",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/embeddings",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'text-embedding-3-small', input: $json.chunkText }) }}",
+        "options": { "timeout": 10000 },
+        "retryOnFail": true,
+        "maxTries": 3,
+        "onError": "continueErrorOutput"
+      },
+      "id": "k7-embed",
+      "name": "Generate Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 300],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": { "id": "PLACEHOLDER_OPENAI_HEADER_CRED", "name": "OpenAI API Header" }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.pinecone.io/vectors/upsert",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Content-Type", "value": "application/json" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ namespace: $('Batch Chunks').item.json.namespace, vectors: [ { id: $('Batch Chunks').item.json.businessId + '-' + $('Batch Chunks').item.json.documentTitle + '-' + $('Batch Chunks').item.json.chunkIndex, values: $json.data[0].embedding, metadata: { businessId: $('Batch Chunks').item.json.businessId, documentTitle: $('Batch Chunks').item.json.documentTitle, text: $('Batch Chunks').item.json.chunkText } } ] }) }}",
+        "options": { "timeout": 10000 },
+        "retryOnFail": true,
+        "maxTries": 3,
+        "onError": "continueErrorOutput"
+      },
+      "id": "k8-pinecone-upsert",
+      "name": "Pinecone Upsert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 300],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": { "id": "PLACEHOLDER_PINECONE_CRED", "name": "Pinecone API Header" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "kb_document_versions",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "business_id", "fieldValue": "={{ $('Normalize Upload').item.json.businessId }}" },
+            { "fieldId": "document_title", "fieldValue": "={{ $('Normalize Upload').item.json.documentTitle }}" },
+            { "fieldId": "namespace", "fieldValue": "={{ $('Normalize Upload').item.json.namespace }}" },
+            { "fieldId": "indexed_at", "fieldValue": "={{ $now.toISO() }}" }
+          ]
+        },
+        "onError": "continueErrorOutput"
+      },
+      "id": "k9-log-version",
+      "name": "Log KB Version",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1540, 300],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.REALTIME_API_BASE_URL }}/internal/cache/flush",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ businessId: $('Normalize Upload').item.json.businessId, scope: 'knowledge' }) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": { "timeout": 3000 },
+        "onError": "continueErrorOutput"
+      },
+      "id": "k10-flush-cache",
+      "name": "Flush Knowledge Cache",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1760, 300],
+      "onError": "continueErrorOutput",
+      "notes": "The HTTP Header Auth credential below must send header 'x-internal-secret' with the same value as the API's INTERNAL_API_SHARED_SECRET env var.",
+      "credentials": {
+        "httpHeaderAuth": { "id": "PLACEHOLDER_INTERNAL_API_CRED", "name": "Internal API Key" }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": "={{ $('Normalize Upload').item.json.slackChannel }}",
+        "text": "=✅ Knowledge base updated for *{{ $('Normalize Upload').item.json.businessName }}* — \"{{ $('Normalize Upload').item.json.documentTitle }}\" indexed.",
+        "otherOptions": {},
+        "onError": "continueErrorOutput"
+      },
+      "id": "k11-slack-done",
+      "name": "Notify KB Updated",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1980, 300],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "slackApi": { "id": "PLACEHOLDER_SLACK_CRED", "name": "Slack account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "workflow_execution_log",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "workflow_name", "fieldValue": "kb-upload" },
+            { "fieldId": "business_id", "fieldValue": "={{ $('Normalize Upload').item.json.businessId }}" },
+            { "fieldId": "status", "fieldValue": "success" }
+          ]
+        }
+      },
+      "id": "k14-workflow-log",
+      "name": "Workflow Log",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2200, 300],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "workflow_errors",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "workflow_name", "fieldValue": "kb-upload" },
+            { "fieldId": "node_name", "fieldValue": "={{ $json.error?.node?.name || 'unknown' }}" },
+            { "fieldId": "error_message", "fieldValue": "={{ $json.error?.message || 'unknown error' }}" },
+            { "fieldId": "raw_payload", "fieldValue": "={{ JSON.stringify($json) }}" }
+          ]
+        }
+      },
+      "id": "k12-handle-failure",
+      "name": "Handle Failure",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1100, 560],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": "#automation-alerts",
+        "text": "=⚠️ kb-upload workflow had an error for business {{ $('Normalize Upload').item.json.businessId || 'unknown' }} — check workflow_errors table. (Note: a single bad chunk doesn't stop the rest of the document from indexing — this alert means at least one chunk failed.)",
+        "otherOptions": {}
+      },
+      "id": "k13-alert-slack",
+      "name": "Alert Engineering",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1320, 560],
+      "credentials": {
+        "slackApi": { "id": "PLACEHOLDER_SLACK_CRED", "name": "Slack account" }
+      }
+    }
+  ],
+  "connections": {
+    "KB Document Uploaded": { "main": [[{ "node": "Normalize Upload", "type": "main", "index": 0 }]] },
+    "Normalize Upload": { "main": [[{ "node": "Is File Upload?", "type": "main", "index": 0 }]] },
+    "Is File Upload?": {
+      "main": [
+        [{ "node": "Extract From File", "type": "main", "index": 0 }],
+        [{ "node": "Chunk Text", "type": "main", "index": 0 }]
+      ]
+    },
+    "Extract From File": { "main": [[{ "node": "Chunk Text", "type": "main", "index": 0 }]] },
+    "Chunk Text": {
+      "main": [
+        [{ "node": "Batch Chunks", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Batch Chunks": {
+      "main": [
+        [{ "node": "Log KB Version", "type": "main", "index": 0 }],
+        [{ "node": "Generate Embedding", "type": "main", "index": 0 }]
+      ]
+    },
+    "Generate Embedding": {
+      "main": [
+        [{ "node": "Pinecone Upsert", "type": "main", "index": 0 }],
+        [{ "node": "Batch Chunks", "type": "main", "index": 0 }, { "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Pinecone Upsert": {
+      "main": [
+        [{ "node": "Batch Chunks", "type": "main", "index": 0 }],
+        [{ "node": "Batch Chunks", "type": "main", "index": 0 }, { "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Log KB Version": {
+      "main": [
+        [{ "node": "Flush Knowledge Cache", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Flush Knowledge Cache": {
+      "main": [
+        [{ "node": "Notify KB Updated", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Notify KB Updated": {
+      "main": [
+        [{ "node": "Workflow Log", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Handle Failure": { "main": [[{ "node": "Alert Engineering", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

@@ -31,3 +31,22 @@ export async function claimIdempotencyKey(key: string, ttlSeconds = 86_400): Pro
   const result = await redis.set(ns(`idem:${key}`), '1', 'EX', ttlSeconds, 'NX');
   return result === 'OK';
 }
+
+/**
+ * Deletes every cached key matching a prefix (e.g. all knowledge-search cache
+ * entries for one business's namespace after a KB re-upload). Uses SCAN rather
+ * than KEYS so it never blocks Redis on a large keyspace — this runs off the
+ * hot path (triggered by n8n after ingestion), so a slightly slower scan is fine.
+ */
+export async function cacheDeleteByPrefix(prefix: string): Promise<number> {
+  let cursor = '0';
+  let deleted = 0;
+  do {
+    const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', ns(`${prefix}*`), 'COUNT', 200);
+    cursor = nextCursor;
+    if (keys.length > 0) {
+      deleted += await redis.del(...keys);
+    }
+  } while (cursor !== '0');
+  return deleted;
+}

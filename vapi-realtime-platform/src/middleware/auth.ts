@@ -25,6 +25,21 @@ function constantTimeEqual(a: string, b: string): boolean {
 }
 
 /**
+ * Verifies the shared secret n8n sends when it calls back INTO this API (today:
+ * only the KB-upload workflow's "flush the cache" step). Same constant-time
+ * pattern as the Vapi secret check, kept as a distinct secret so rotating one
+ * doesn't require rotating the other.
+ */
+export function verifyInternalSecret(req: FastifyRequest, reply: FastifyReply, done: (err?: Error) => void): void {
+  const provided = req.headers['x-internal-secret'];
+  if (typeof provided !== 'string' || !constantTimeEqual(provided, env.INTERNAL_API_SHARED_SECRET)) {
+    reply.code(401).send(fail(ErrorCodes.UNAUTHORIZED, 'Invalid or missing internal secret', false));
+    return;
+  }
+  done();
+}
+
+/**
  * For non-Vapi callers of the standalone REST endpoints (internal dashboard, a
  * future web-chat channel reusing /knowledge/search, etc.) — a hashed API key
  * scoped to one business, never the raw key at rest.

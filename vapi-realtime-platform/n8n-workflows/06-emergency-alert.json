@@ -1,0 +1,274 @@
+{
+  "name": "[MASTER] Emergency Alert",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "emergency-alert",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "eg1-webhook",
+      "name": "Emergency Logged Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "emergency-alert-master",
+      "notes": "Fires the instant the phone assistant flags an emergency. The assistant may have ALREADY live-transferred the caller (see `action`) — this workflow's job is purely to make sure a human on your team also finds out immediately, on record."
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "e1", "name": "businessId", "type": "string", "value": "={{ $json.body.businessId }}" },
+            { "id": "e2", "name": "businessName", "type": "string", "value": "={{ $json.body.businessName }}" },
+            { "id": "e3", "name": "callerPhone", "type": "string", "value": "={{ $json.body.callerPhone }}" },
+            { "id": "e4", "name": "issueSummary", "type": "string", "value": "={{ $json.body.issueSummary }}" },
+            { "id": "e5", "name": "severity", "type": "string", "value": "={{ $json.body.severity }}" },
+            { "id": "e6", "name": "action", "type": "string", "value": "={{ $json.body.action }}" },
+            { "id": "e7", "name": "ghlLocationId", "type": "string", "value": "={{ $json.body.ghlLocationId }}" },
+            { "id": "e8", "name": "frontDeskOwnerId", "type": "string", "value": "={{ $json.body.frontDeskOwnerId }}" },
+            { "id": "e9", "name": "slackChannel", "type": "string", "value": "={{ $json.body.slackChannel || '#emergencies' }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "eg2-normalize",
+      "name": "Normalize Payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "from": "={{ $env.TWILIO_FROM_NUMBER }}",
+        "to": "={{ $env.FRONT_DESK_ALERT_PHONE }}",
+        "message": "=🚨 EMERGENCY — {{ $json.businessName }}: caller {{ $json.callerPhone }}. {{ $json.issueSummary }}. Severity: {{ $json.severity }}. {{ $json.action === 'live_transfer' ? 'Caller was transferred live.' : 'Caller was NOT transferred — please call them back now.' }}",
+        "onError": "continueErrorOutput"
+      },
+      "id": "eg3-sms-frontdesk",
+      "name": "SMS On-Call Staff",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [440, 220],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "twilioApi": { "id": "PLACEHOLDER_TWILIO_CRED", "name": "Twilio account" }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $env.FRONT_DESK_ALERT_EMAIL }}",
+        "subject": "=🚨 EMERGENCY — {{ $json.businessName }}",
+        "message": "=Caller: {{ $json.callerPhone }}<br>Issue: {{ $json.issueSummary }}<br>Severity: {{ $json.severity }}<br>Action taken by assistant: {{ $json.action }}<br><br>Please follow up immediately.",
+        "options": {},
+        "onError": "continueErrorOutput"
+      },
+      "id": "eg4-email",
+      "name": "Email On-Call Staff",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [660, 220],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "gmailOAuth2": { "id": "PLACEHOLDER_GMAIL_CRED", "name": "Gmail account" }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "g1",
+              "leftValue": "={{ $json.ghlLocationId }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "eg10-has-ghl",
+      "name": "Has GHL Location?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://services.leadconnectorhq.com/tasks/",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Version", "value": "2021-07-28" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ locationId: $json.ghlLocationId, title: '🚨 EMERGENCY callback: ' + $json.callerPhone, assignedTo: $json.frontDeskOwnerId, dueDate: $now.plus({ minutes: 15 }).toISO() }) }}",
+        "options": { "timeout": 5000 },
+        "onError": "continueErrorOutput"
+      },
+      "id": "eg5-ghl-task",
+      "name": "Create GHL Urgent Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 220],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": { "id": "PLACEHOLDER_GHL_CRED", "name": "Go High Level API" }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": "={{ $json.slackChannel }}",
+        "text": "=🚨 *EMERGENCY* — {{ $json.businessName }}\nCaller: {{ $json.callerPhone }}\nIssue: {{ $json.issueSummary }}\nSeverity: {{ $json.severity }} | Assistant action: {{ $json.action }}",
+        "otherOptions": {},
+        "onError": "continueErrorOutput"
+      },
+      "id": "eg6-slack",
+      "name": "Notify Team",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1320, 300],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "slackApi": { "id": "PLACEHOLDER_SLACK_CRED", "name": "Slack account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "audit_log",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "business_id", "fieldValue": "={{ $json.businessId }}" },
+            { "fieldId": "event_type", "fieldValue": "emergency_alert_processed" }
+          ]
+        }
+      },
+      "id": "eg7-audit-log",
+      "name": "Audit Log",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1540, 300],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "workflow_execution_log",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "workflow_name", "fieldValue": "emergency-alert" },
+            { "fieldId": "business_id", "fieldValue": "={{ $json.businessId }}" },
+            { "fieldId": "status", "fieldValue": "success" }
+          ]
+        }
+      },
+      "id": "eg8-workflow-log",
+      "name": "Workflow Log",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1760, 300],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "tableId": "workflow_errors",
+        "dataToSend": "defineBelow",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "workflow_name", "fieldValue": "emergency-alert" },
+            { "fieldId": "node_name", "fieldValue": "={{ $json.error?.node?.name || 'unknown' }}" },
+            { "fieldId": "error_message", "fieldValue": "={{ $json.error?.message || 'unknown error' }}" },
+            { "fieldId": "raw_payload", "fieldValue": "={{ JSON.stringify($json) }}" }
+          ]
+        }
+      },
+      "id": "eg9-handle-failure",
+      "name": "Handle Failure",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [880, 480],
+      "credentials": {
+        "supabaseApi": { "id": "PLACEHOLDER_SUPABASE_CRED", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": "#automation-alerts",
+        "text": "=⚠️ emergency-alert workflow failed for business {{ $json.businessId || 'unknown' }} — check workflow_errors table IMMEDIATELY, this is a safety-critical alert path.",
+        "otherOptions": {}
+      },
+      "id": "eg11-alert-slack",
+      "name": "Alert Engineering",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1100, 480],
+      "credentials": {
+        "slackApi": { "id": "PLACEHOLDER_SLACK_CRED", "name": "Slack account" }
+      }
+    }
+  ],
+  "connections": {
+    "Emergency Logged Trigger": { "main": [[{ "node": "Normalize Payload", "type": "main", "index": 0 }]] },
+    "Normalize Payload": { "main": [[{ "node": "SMS On-Call Staff", "type": "main", "index": 0 }]] },
+    "SMS On-Call Staff": {
+      "main": [
+        [{ "node": "Email On-Call Staff", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Email On-Call Staff": {
+      "main": [
+        [{ "node": "Has GHL Location?", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Has GHL Location?": {
+      "main": [
+        [{ "node": "Create GHL Urgent Task", "type": "main", "index": 0 }],
+        [{ "node": "Notify Team", "type": "main", "index": 0 }]
+      ]
+    },
+    "Create GHL Urgent Task": {
+      "main": [
+        [{ "node": "Notify Team", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Notify Team": {
+      "main": [
+        [{ "node": "Audit Log", "type": "main", "index": 0 }],
+        [{ "node": "Handle Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Audit Log": { "main": [[{ "node": "Workflow Log", "type": "main", "index": 0 }]] },
+    "Handle Failure": { "main": [[{ "node": "Alert Engineering", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

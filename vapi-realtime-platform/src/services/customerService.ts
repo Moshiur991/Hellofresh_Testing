@@ -11,6 +11,7 @@ export interface CustomerRecord {
   phoneE164: string | null;
   email: string | null;
   customerType: 'new' | 'existing';
+  ghlContactId: string | null;
 }
 
 export async function validateCustomer(params: {
@@ -35,6 +36,7 @@ export async function validateCustomer(params: {
     phoneE164: data.phone_e164,
     email: data.email,
     customerType: data.customer_type,
+    ghlContactId: data.ghl_contact_id,
   };
   await cacheSet(cacheKey, record, CACHE_TTL_SECONDS);
   return record;
@@ -75,5 +77,6 @@ export async function upsertCustomer(params: {
     phoneE164: data.phone_e164,
     email: data.email,
     customerType: data.customer_type,
+    ghlContactId: data.ghl_contact_id,
   };
 }
