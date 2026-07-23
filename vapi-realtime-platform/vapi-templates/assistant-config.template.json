@@ -1,0 +1,179 @@
+{
+  "_comment": "Generic, vertical-agnostic assistant template. One JSON per business is generated from this by scripts/generate-assistant-config.ts, which merges: (1) this template, (2) the business's row in `businesses`/`locations`, (3) the vertical-specific system prompt from vapi-templates/prompts/<vertical>.md, (4) a voice/model override if the business has one. POST the result to https://api.vapi.ai/assistant (create) or PATCH .../assistant/{id} (update). Verify field names against current Vapi docs before importing — this API evolves.",
+  "name": "{{business_name}} Voice Assistant",
+  "firstMessage": "Thanks for calling {{business_name}}! This is our virtual assistant — how can I help you today?",
+  "voicemailMessage": "Hi, this is the virtual assistant for {{business_name}}. Sorry we couldn't take your call — please call back during business hours or leave a message after the tone.",
+  "endCallMessage": "Thanks for calling {{business_name}}, take care!",
+  "endCallPhrases": ["goodbye", "that's all, thanks", "bye now"],
+  "silenceTimeoutSeconds": 20,
+  "maxDurationSeconds": 900,
+  "backgroundSound": "office",
+  "server": {
+    "url": "{{server_url}}",
+    "secret": "{{vapi_webhook_secret}}",
+    "_comment": "Same URL + secret for every business — /webhooks/vapi resolves the caller's business/location from call.assistantId and call.phoneNumberId server-side. Do NOT create one webhook URL per business; that doesn't scale to 100+ tenants and duplicates the tenant-resolution logic that already lives in tenantResolver.ts."
+  },
+  "transcriber": {
+    "provider": "deepgram",
+    "model": "nova-2",
+    "language": "en"
+  },
+  "model": {
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "temperature": 0.3,
+    "messages": [
+      { "role": "system", "content": "{{system_prompt}}" }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "async": false,
+        "messages": [{ "type": "request-start", "content": "One moment while I look that up." }],
+        "function": {
+          "name": "lookup_customer",
+          "description": "Check whether the caller is an existing customer/patient/client by phone or email. Call this as soon as you have either.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "phone": { "type": "string", "description": "Caller's phone number, digits as spoken" },
+              "email": { "type": "string" },
+              "first_name": { "type": "string" },
+              "last_name": { "type": "string" }
+            },
+            "required": []
+          }
+        }
+      },
+      {
+        "type": "function",
+        "async": false,
+        "messages": [{ "type": "request-start", "content": "Let me check that time for you." }],
+        "function": {
+          "name": "check_availability",
+          "description": "Check whether a specific appointment start time is free, before offering to book it.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "start_iso": { "type": "string", "description": "Proposed start time, full ISO-8601 datetime" },
+              "duration_min": { "type": "number" }
+            },
+            "required": ["start_iso"]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "async": false,
+        "messages": [{ "type": "request-start", "content": "Let me get that tentatively held for you." }],
+        "function": {
+          "name": "book_appointment",
+          "description": "Tentatively book an appointment. Only call once you have the caller's name, phone, requested service, and a specific date/time. It checks availability internally.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "first_name": { "type": "string" },
+              "last_name": { "type": "string" },
+              "phone": { "type": "string" },
+              "email": { "type": "string" },
+              "service": { "type": "string" },
+              "start_iso": { "type": "string" },
+              "duration_min": { "type": "number" }
+            },
+            "required": ["first_name", "phone", "service", "start_iso"]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "async": false,
+        "messages": [{ "type": "request-start", "content": "Give me one second to pull that up." }],
+        "function": {
+          "name": "cancel_or_reschedule_appointment",
+          "description": "Cancel or reschedule the caller's existing appointment. Short-notice changes are automatically routed to staff instead of made immediately — you'll be told which happened.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "phone": { "type": "string" },
+              "action": { "type": "string", "enum": ["cancel", "reschedule"] },
+              "new_start_iso": { "type": "string" },
+              "reason": { "type": "string" }
+            },
+            "required": ["phone", "action"]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "async": false,
+        "function": {
+          "name": "log_emergency",
+          "description": "Log an urgent issue for immediate staff follow-up. Call this immediately whenever the caller describes an emergency (definition varies by business — see system prompt).",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "phone": { "type": "string" },
+              "issue_summary": { "type": "string" },
+              "severity": { "type": "string" }
+            },
+            "required": ["issue_summary"]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "async": false,
+        "function": {
+          "name": "request_human_handoff",
+          "description": "Escalate to staff for direct follow-up, e.g. when the caller asks for a person or you can't help.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "phone": { "type": "string" },
+              "email": { "type": "string" },
+              "reason": { "type": "string" }
+            },
+            "required": ["reason"]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "async": false,
+        "function": {
+          "name": "business_hours",
+          "description": "Check current open/closed status and today's hours. Prefer this over guessing.",
+          "parameters": { "type": "object", "properties": {}, "required": [] }
+        }
+      },
+      {
+        "type": "function",
+        "async": false,
+        "messages": [{ "type": "request-start", "content": "Good question, let me check." }],
+        "function": {
+          "name": "faq_lookup",
+          "description": "Look up a general question (hours, location, pricing, policies, services) not already covered by your built-in knowledge base. Prefer answering from your own knowledge first.",
+          "parameters": {
+            "type": "object",
+            "properties": { "question": { "type": "string" } },
+            "required": ["question"]
+          }
+        }
+      }
+    ]
+  },
+  "voice": {
+    "provider": "11labs",
+    "voiceId": "{{voice_id}}",
+    "model": "eleven_turbo_v2_5"
+  },
+  "knowledgeBase": {
+    "_comment": "RECOMMENDED: upload this business's docs via Vapi's native Knowledge Base / File Search feature instead of relying solely on faq_lookup — avoids an extra webhook + vector DB round trip per question. Keep faq_lookup as the fallback for anything the native KB misses.",
+    "provider": "{{knowledge_base_provider}}"
+  },
+  "metadata": {
+    "business_id": "{{business_id}}",
+    "vertical": "{{vertical}}",
+    "prompt_version": "{{prompt_version}}"
+  }
+}

@@ -1,0 +1,26 @@
+# Deploy target: Fly.io, chosen over serverless (Lambda/Cloud Run) because this
+# service must stay warm — a cold start landing inside a live call's tool-call
+# round trip would blow the entire latency budget. See docs/ARCHITECTURE.md
+# "Why Fly.io / always-on over serverless" for the full trade-off writeup.
+app = "ai-receptionist-realtime-api"
+primary_region = "iad" # co-locate with your Vapi/Twilio region; adjust per deployment
+
+[build]
+
+[env]
+  PORT = "8080"
+  NODE_ENV = "production"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false   # never scale to zero — cold start = blown latency budget
+  auto_start_machines = true
+  min_machines_running = 2     # 2+ for zero-downtime deploys and basic HA
+
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "15s"
+  method = "GET"
+  path = "/healthz"
+  timeout = "3s"
