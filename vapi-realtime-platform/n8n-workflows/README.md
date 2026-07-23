@@ -4,6 +4,13 @@ This folder has **9 workflows**. They run *after* the phone call already happene
 — nothing here talks to the caller in real time. Import them into n8n in the
 order listed below.
 
+![How the phone system, this API, and n8n fit together](diagrams/system-overview.svg)
+
+*The phone system (Vapi) only ever talks to the real-time API. The API answers
+the caller immediately, then separately — without making the caller wait —
+tells n8n what happened. n8n is the only thing that talks to Twilio, Gmail,
+Slack, GHL, and (for knowledge uploads) Pinecone.*
+
 ## What changed from your original 5 files
 
 - **Appointment Booked** no longer texts the customer "confirmed." Every phone
@@ -30,6 +37,8 @@ order listed below.
 
 ## The 9 workflows, in import order
 
+![Map of all 9 workflows grouped by what triggers them](diagrams/workflow-map.svg)
+
 | # | File | Fires when | What it does |
 |---|---|---|---|
 | 1 | `01-call-completed.json` | Every call ends (normal conversation) | Stores transcript, AI-summarizes the call, saves it, updates GHL, pings staff if it needs follow-up |
@@ -47,6 +56,8 @@ is a bit different — see below.
 
 ## How staff confirm a booking (workflow 4)
 
+![The booking lifecycle: tentative hold, then a separate staff-confirmed step](diagrams/booking-lifecycle.svg)
+
 Workflow 4 needs *something* to call it once a staff member has actually
 checked and confirmed the appointment. Pick whichever is easiest for you —
 none of these require writing code:
@@ -58,6 +69,13 @@ none of these require writing code:
 
 Whichever you pick, it needs to send the same information as workflow 3
 (customer name/phone/email, appointment time, service, business name).
+
+## How cancel/reschedule decisions work (workflow 5)
+
+![Decision flow for whether a cancel/reschedule is handled automatically or escalated to staff](diagrams/cancel-reschedule-decision.svg)
+
+The phone system only makes the change itself when it's confident and there's
+enough notice — otherwise it hands it to staff rather than guessing.
 
 ## Credentials you'll need in n8n
 
