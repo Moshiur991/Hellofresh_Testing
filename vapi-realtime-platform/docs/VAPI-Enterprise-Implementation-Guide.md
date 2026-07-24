@@ -1,5 +1,10 @@
 # Enterprise AI Receptionist — Vapi Real-Time Architecture & Implementation Guide
 
+> Looking for the combined, start-to-finish process covering this **and** the
+> n8n background workflows in one ordered walkthrough? See
+> `MASTER-Implementation-Guide.pdf` in this same folder. This document is the
+> focused, real-time-layer-only deep dive.
+
 **Scope:** the real-time voice layer only (Section 1 of the platform spec). Background
 automation (n8n) is a separate, already-built system this document treats as a
 downstream consumer, not something it re-designs.

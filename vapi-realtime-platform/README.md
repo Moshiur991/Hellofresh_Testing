@@ -11,11 +11,15 @@ Background automation (transcripts, CRM sync, confirmation SMS/email, analytics,
 follow-ups) is **not** here — that's n8n, triggered fire-and-forget from this
 service and running fully decoupled from the call.
 
-For the full architecture rationale, sequence diagrams, API contracts, and the
-step-by-step Vapi implementation process, see
-**`docs/VAPI-Enterprise-Implementation-Guide.pdf`** (built from
-`docs/VAPI-Enterprise-Implementation-Guide.md`). This README is the quick
-developer setup only.
+**Start here for the full setup process:**
+**`docs/MASTER-Implementation-Guide.pdf`** — one start-to-finish walkthrough
+(database → deploy this API → create the Vapi assistant → connect the phone
+number → import the n8n workflows → test end-to-end), with diagrams, plus a
+Reference section covering the deeper architecture rationale, API contracts,
+security, and scalability. This README is the quick developer setup only.
+(The original standalone `docs/VAPI-Enterprise-Implementation-Guide.pdf` and
+`n8n-workflows/README.md` still exist as focused, single-topic references if
+you only need one half.)
 
 ## Quick start
 

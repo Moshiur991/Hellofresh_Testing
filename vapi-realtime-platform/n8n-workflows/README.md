@@ -1,5 +1,10 @@
 # n8n Background Workflows — Setup Guide (plain-language)
 
+> Looking for the full start-to-finish process (database → real-time API →
+> Vapi assistant → phone number → **these workflows** → testing)? See
+> `../docs/MASTER-Implementation-Guide.pdf`, which includes everything below
+> as one of its phases. This file is the focused, n8n-only reference.
+
 This folder has **9 workflows**. They run *after* the phone call already happened
 — nothing here talks to the caller in real time. Import them into n8n in the
 order listed below.
